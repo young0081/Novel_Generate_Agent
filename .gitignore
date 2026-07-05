@@ -61,6 +61,10 @@ desktop-tauri/src/styles/DESKTOP_V2_MIGRATION.md
 # 构建脚本（包含本地路径和证书信息）
 rebuild-installer.sh
 
+# 测试和临时文件
+test-package/
+uninstaller/
+
 # OS / editor
 .DS_Store
 Thumbs.db
