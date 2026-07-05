@@ -1,0 +1,59 @@
+# Rust
+/core/target/
+**/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / Next.js (later phases)
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+
+# Flutter (later phases)
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Secrets & local config
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Android signing secrets (never commit real keystores/passwords)
+**/key.properties
+*.jks
+*.keystore
+
+# Runtime data produced by the agent core (workspaces / stores)
+/runtime-data/
+*.audit.jsonl
+
+# Tauri build output (artifacts live on E: via CARGO_TARGET_DIR)
+desktop-tauri/src-tauri/gen/
+
+# Custom installer (Tauri): the embedded payload exe + generated dirs are regenerable
+installer/src-tauri/payload/
+installer/src-tauri/gen/
+installer/dist-out/
+
+# Agent / CLI 相关（本地开发配置，不上传）
+.claude/
+.codex/
+CLAUDE.md
+claude.md
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Keep these
+!.gitignore
+!.env.example

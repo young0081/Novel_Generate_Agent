@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#efe8da" />
+    <title>墨 · 创作 安装程序</title>
+    <style>
+      /* paint the paper base immediately so there is no white flash on launch */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #efe8da;
+      }
+      #root {
+        height: 100%;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

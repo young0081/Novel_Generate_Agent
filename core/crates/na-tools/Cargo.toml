@@ -1,0 +1,19 @@
+[package]
+name = "na-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+na-common.workspace = true
+na-sandbox.workspace = true
+na-memory.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Inherit the workspace tokio (features merge additively). The real stdio-MCP
+# client and HTTP fetcher added in this crate need raw sockets, so we enable the
+# `net` feature on top of the shared feature set; this is purely additive.
+tokio = { workspace = true, features = ["net"] }
+regex.workspace = true

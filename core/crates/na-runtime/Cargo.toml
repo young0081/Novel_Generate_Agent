@@ -1,0 +1,20 @@
+[package]
+name = "na-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+na-common.workspace = true
+na-sandbox.workspace = true
+na-tools.workspace = true
+na-memory.workspace = true
+na-story = { path = "../na-story" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+regex.workspace = true
+# Real LLM provider HTTP calls. native-tls => Windows SChannel (no ring/aws-lc/cmake/nasm build deps).
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }

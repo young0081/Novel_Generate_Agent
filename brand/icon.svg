@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="cinnabar" x1="0.18" y1="0.05" x2="0.85" y2="0.98">
+      <stop offset="0" stop-color="#d24b33"/>
+      <stop offset="0.55" stop-color="#bb3622"/>
+      <stop offset="1" stop-color="#9e2517"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.5" cy="0.26" r="0.72">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-color="#5b1a10" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+
+  <!-- 朱砂印章 seal body -->
+  <rect x="74" y="74" width="876" height="876" rx="198" fill="url(#cinnabar)" filter="url(#soft)"/>
+  <!-- carved double frame -->
+  <rect x="150" y="150" width="724" height="724" rx="150" fill="none" stroke="#f3ede0" stroke-opacity="0.30" stroke-width="11"/>
+  <rect x="176" y="176" width="672" height="672" rx="128" fill="none" stroke="#3a0f08" stroke-opacity="0.18" stroke-width="6"/>
+  <!-- top sheen -->
+  <rect x="74" y="74" width="876" height="876" rx="198" fill="url(#sheen)"/>
+
+  <!-- 墨 character (rendered with a system serif/Song face) -->
+  <text x="516" y="540" text-anchor="middle" dominant-baseline="central"
+        font-family="STSong, SimSun, 'Songti SC', 'Noto Serif SC', serif"
+        font-size="600" font-weight="600" fill="#f4eede">墨</text>
+</svg>

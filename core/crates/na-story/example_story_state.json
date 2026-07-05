@@ -1,0 +1,113 @@
+{
+  "meta": {
+    "title": "修仙逆袭录",
+    "genre": "修仙/热血",
+    "last_chapter": 0
+  },
+  "world": {
+    "rules": [
+      {
+        "id": "wr_001",
+        "description": "筑基期以下无法御剑飞行"
+      },
+      {
+        "id": "wr_002",
+        "description": "修炼需要消耗灵力,过度消耗会损伤根基"
+      }
+    ]
+  },
+  "characters": {
+    "char_001": {
+      "id": "char_001",
+      "name": "林惊羽",
+      "core_traits": [
+        "冷静",
+        "重情义",
+        "不轻易承诺"
+      ],
+      "current_status": "练气九层,准备突破筑基",
+      "goals": [
+        "找到杀师仇人",
+        "保护师妹"
+      ]
+    },
+    "char_002": {
+      "id": "char_002",
+      "name": "苏清雪",
+      "core_traits": [
+        "聪慧",
+        "善良",
+        "对林惊羽有好感"
+      ],
+      "current_status": "练气七层,在宗门内修炼",
+      "goals": [
+        "提升修为",
+        "帮助师兄"
+      ]
+    }
+  },
+  "timeline": {
+    "current_chapter": 0,
+    "events": []
+  },
+  "knowledge_matrix": {
+    "entries": {
+      "char_001::fact_master_killed": {
+        "knows": true,
+        "learned_at": null
+      },
+      "char_001::fact_betrayer_identity": {
+        "knows": false,
+        "learned_at": null
+      },
+      "char_002::fact_master_killed": {
+        "knows": true,
+        "learned_at": null
+      },
+      "char_002::fact_betrayer_identity": {
+        "knows": false,
+        "learned_at": null
+      }
+    }
+  },
+  "foreshadows": [
+    {
+      "id": "fh_001",
+      "description": "师傅临终时眼神看向北方",
+      "planted_at": 1,
+      "status": "Planted"
+    },
+    {
+      "id": "fh_002",
+      "description": "神秘玉佩在月圆之夜会发光",
+      "planted_at": 1,
+      "status": "Planted"
+    }
+  ],
+  "hard_constraints": [
+    {
+      "id": "hc_001",
+      "description": "林惊羽绝不会背叛朋友",
+      "severity": "Critical"
+    },
+    {
+      "id": "hc_002",
+      "description": "筑基期以下无法御剑飞行(世界规则)",
+      "severity": "High"
+    },
+    {
+      "id": "hc_003",
+      "description": "苏清雪不知道掌门是叛徒,第10章前不能得知",
+      "severity": "High"
+    }
+  ],
+  "soft_preferences": [
+    {
+      "description": "战斗场景要有策略性,不要无脑硬碰硬"
+    },
+    {
+      "description": "对话要符合修仙世界的用语习惯"
+    }
+  ],
+  "current_chapter_goal": null
+}

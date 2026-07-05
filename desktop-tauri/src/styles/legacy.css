@@ -1,0 +1,5294 @@
+/* legacy.css — v1 styles scoped under .legacy-scope, auto-generated */
+/* ============================================================
+   App layout + components  (墨 · 创作)
+   ============================================================ */
+
+/* ---------- shell ---------- */
+ .legacy-scope .app-shell{
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+ .legacy-scope .app-body{
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---------- title bar ---------- */
+ .legacy-scope .titlebar{
+  height: var(--titlebar-h);
+  flex: 0 0 var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 0 14px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border-bottom: 1px solid var(--line);
+  position: relative;
+  z-index: 20;
+}
+/* a hairline of light along the very top edge for a crafted feel */
+ .legacy-scope .titlebar::before{
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: rgba(255, 253, 247, 0.7);
+  pointer-events: none;
+}
+
+ .legacy-scope .titlebar__brand{
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  pointer-events: none;
+}
+
+ .legacy-scope .titlebar__title{
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.14em;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  /* trailing letter-spacing pushes the glyph right; pull it back */
+  padding-right: 0.14em;
+}
+ .legacy-scope .titlebar__dot{
+  color: var(--cinnabar);
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1;
+  margin: 0 1px;
+  transform: translateY(-0.5px);
+}
+ .legacy-scope .titlebar__sub{
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--ink-faint);
+  margin-left: 13px;
+  padding-left: 13px;
+  border-left: 1px solid var(--line);
+  padding-right: 0.16em;
+}
+
+ .legacy-scope .titlebar__spacer{
+  flex: 1;
+  align-self: stretch;
+}
+
+ .legacy-scope .titlebar__health{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  padding: 3px 11px 3px 9px;
+  margin-right: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-inset);
+  pointer-events: none;
+}
+ .legacy-scope .health-dot{
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ink-ghost);
+  box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+}
+ .legacy-scope .health-dot--ok{
+  background: #5b8c5a;
+  box-shadow: 0 0 0 3px rgba(91, 140, 90, 0.16);
+}
+ .legacy-scope .health-dot--bad{
+  background: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--cinnabar-wash);
+}
+ .legacy-scope .health-dot--checking{
+  background: var(--ink-faint);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+ .legacy-scope .win-controls{
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+ .legacy-scope .win-btn{
+  width: 36px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  transition: background 0.16s ease, color 0.16s ease;
+}
+ .legacy-scope .win-btn:hover{
+  background: var(--cinnabar-wash);
+  color: var(--ink);
+}
+ .legacy-scope .win-btn:active{
+  background: var(--cinnabar-wash-2);
+}
+ .legacy-scope .win-btn--close:hover{
+  background: var(--cinnabar);
+  color: #fff;
+}
+ .legacy-scope .win-btn--close:active{
+  background: var(--cinnabar-deep);
+}
+ .legacy-scope .win-btn:focus-visible{
+  outline-offset: -2px;
+}
+ .legacy-scope .win-btn svg{
+  display: block;
+}
+
+/* ---------- 印章 seal logo ---------- */
+ .legacy-scope .seal{
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(
+      120% 120% at 30% 22%,
+      var(--cinnabar-bright),
+      var(--cinnabar) 55%,
+      var(--cinnabar-deep) 100%
+    );
+  color: #fdf1ea;
+  font-family: var(--serif);
+  font-weight: 700;
+  /* the carved frame (边框): a recessed inner line + soft seated shadow */
+  box-shadow: inset 0 0 0 var(--seal-frame, 1.5px) rgba(255, 240, 232, 0.34),
+    inset 0 0 0 calc(var(--seal-frame, 1.5px) + 1px) var(--cinnabar-deep),
+    inset 0 1px 2px rgba(255, 255, 255, 0.28),
+    0 1px 2px rgba(120, 30, 22, 0.45);
+  user-select: none;
+  flex: none;
+  overflow: hidden;
+  isolation: isolate;
+}
+ .legacy-scope .seal__char{
+  position: relative;
+  z-index: 2;
+  line-height: 1;
+  transform: translateY(0.02em);
+  text-shadow: 0 1px 1px rgba(120, 30, 22, 0.5);
+}
+ .legacy-scope .seal::after{
+  /* faint stamped-ink mottling — multiply so it darkens (ages) the block */
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48'><filter id='s'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2'/></filter><rect width='48' height='48' filter='url(%23s)' opacity='0.3'/></svg>");
+  mix-blend-mode: multiply;
+  opacity: 0.35;
+  pointer-events: none;
+}
+ .legacy-scope .seal--soft{
+  box-shadow: inset 0 0 0 var(--seal-frame, 2px) rgba(255, 240, 232, 0.4),
+    inset 0 0 0 calc(var(--seal-frame, 2px) + 1.5px) var(--cinnabar-deep),
+    inset 0 1px 3px rgba(255, 255, 255, 0.3),
+    0 4px 12px rgba(151, 41, 30, 0.28);
+}
+
+/* ---------- sidebar ---------- */
+ .legacy-scope .sidebar{
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--paper-panel), var(--paper) 72%);
+  border-right: 1px solid var(--line);
+  padding: 16px 14px 14px;
+  overflow-y: auto;
+}
+
+ .legacy-scope .sidebar__head{
+  padding: 4px 6px 16px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+ .legacy-scope .sidebar__title{
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+ .legacy-scope .sidebar__caption{
+  font-size: 10px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.32em;
+  margin-top: 3px;
+  padding-left: 0.32em;
+}
+
+ .legacy-scope .nav{
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+ .legacy-scope .nav__label{
+  font-size: 10.5px;
+  letter-spacing: 0.26em;
+  color: var(--ink-ghost);
+  padding: 6px 12px 8px;
+  padding-left: calc(12px + 0.26em);
+}
+ .legacy-scope .nav-item{
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  padding: 10px 13px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--ink-muted);
+  font-size: 14px;
+  transition: background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+ .legacy-scope .nav-item:hover{
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+ .legacy-scope .nav-item:hover .nav-item__icon{
+  color: var(--ink-soft);
+  transform: translateX(1px);
+}
+ .legacy-scope .nav-item:active{
+  transform: scale(0.985);
+}
+ .legacy-scope .nav-item__icon{
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+  transition: color var(--dur-2) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+  flex: none;
+}
+ .legacy-scope .nav-item__label{
+  font-family: var(--serif);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  flex: 1;
+  padding-left: 0.08em;
+}
+ .legacy-scope .nav-item__hint{
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  transition: opacity 0.2s ease;
+}
+ .legacy-scope .nav-item:hover .nav-item__hint{
+  opacity: 1;
+}
+ .legacy-scope .nav-item.is-active{
+  background: linear-gradient(
+    90deg,
+    var(--cinnabar-wash) 0%,
+    var(--paper-raised) 60%
+  );
+  color: var(--ink);
+  border-color: var(--line-soft);
+  font-weight: 600;
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .nav-item.is-active .nav-item__icon{
+  color: var(--cinnabar);
+  transform: scale(1.04);
+}
+ .legacy-scope .nav-item.is-active:hover .nav-item__icon{
+  transform: scale(1.04) translateX(1px);
+}
+ .legacy-scope .nav-item.is-active .nav-item__hint{
+  color: var(--cinnabar);
+  opacity: 0.65;
+}
+/* ink-brush active indicator: a tapered cinnabar bar with a soft loaded end.
+   It grows from a dab into the full stroke when a nav item becomes active —
+   like a brush being set down and drawn. */
+ .legacy-scope .nav-item.is-active::before{
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 5px;
+  height: 24px;
+  border-radius: 6px 6px 5px 5px / 9px 9px 7px 7px;
+  background: linear-gradient(
+    180deg,
+    var(--cinnabar-bright),
+    var(--cinnabar) 60%,
+    var(--cinnabar-deep)
+  );
+  box-shadow: 0 2px 8px var(--cinnabar-wash-2),
+    0 0 0 0.5px var(--cinnabar-deep);
+  transform: translateY(-50%) scaleY(0.18);
+  transform-origin: center;
+  animation: nav-ink 0.42s var(--ease-brush) forwards;
+}
+@keyframes nav-ink {
+  0% {
+    transform: translateY(-50%) scaleY(0.18);
+    opacity: 0;
+  }
+  55% {
+    transform: translateY(-50%) scaleY(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-50%) scaleY(1);
+    opacity: 1;
+  }
+}
+
+ .legacy-scope .sidebar__foot{
+  margin-top: auto;
+  padding: 14px 12px 4px;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--serif);
+  font-size: 11.5px;
+  color: var(--ink-ghost);
+  line-height: 1.8;
+  letter-spacing: 0.04em;
+}
+ .legacy-scope .sidebar__foot strong{
+  color: var(--ink-faint);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+/* ---------- main / paper panel ---------- */
+ .legacy-scope .main{
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 18px 18px 18px 16px;
+}
+
+ .legacy-scope .panel{
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-panel);
+  /* a hair of inner light along the top edge sells the "raised sheet" */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 253, 247, 0.5),
+    transparent 96px
+  );
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  overflow: hidden;
+}
+
+/* faint single-stroke brush flourish in the corner — a calm diagonal sweep */
+ .legacy-scope .panel__flourish{
+  position: absolute;
+  top: 6px;
+  right: -22px;
+  width: 248px;
+  height: 120px;
+  opacity: 0.055;
+  transform: rotate(-7deg);
+  transform-origin: top right;
+  pointer-events: none;
+  color: var(--ink);
+  z-index: 0;
+}
+
+ .legacy-scope .panel__header{
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+ .legacy-scope .panel__heading{
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+ .legacy-scope .panel__title{
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 13px;
+  padding-bottom: 2px;
+}
+ .legacy-scope .panel__title-cn{
+  font-family: var(--serif);
+  font-size: 25px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.06em;
+  padding-left: 0.06em;
+}
+ .legacy-scope .panel__title .en{
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.3em;
+  color: var(--ink-ghost);
+  text-transform: uppercase;
+  transform: translateY(-3px);
+  padding-left: 0.3em;
+}
+/* a brush-loaded underline that tapers off — not a hard accent bar */
+ .legacy-scope .panel__title-stroke{
+  position: absolute;
+  left: 1px;
+  bottom: -8px;
+  width: 64px;
+  height: 6px;
+  color: var(--cinnabar);
+  opacity: 0.92;
+  pointer-events: none;
+}
+ .legacy-scope .panel__subtitle{
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+}
+ .legacy-scope .panel__actions{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+ .legacy-scope .panel__body{
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+ .legacy-scope .scroll-area{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 26px 30px;
+}
+
+/* ---------- buttons ---------- */
+ .legacy-scope .btn{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-family: var(--sans);
+  letter-spacing: 0.06em;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-inset);
+  transition: transform var(--dur-1) var(--ease-out),
+    background var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* a soft ink ripple that wells up from the centre on press — drawn as an
+   expanding radial wash, transform/opacity only, then it settles back. */
+ .legacy-scope .btn::after{
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 220%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(72, 56, 36, 0.16),
+    rgba(72, 56, 36, 0) 60%
+  );
+  transform: translate(-50%, -50%) scale(0.2);
+  opacity: 0;
+  pointer-events: none;
+}
+ .legacy-scope .btn:active::after{
+  animation: btn-ripple 0.5s var(--ease-out);
+}
+@keyframes btn-ripple {
+  0% {
+    transform: translate(-50%, -50%) scale(0.2);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+}
+ .legacy-scope .btn:hover{
+  border-color: var(--ink-ghost);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-slip);
+  transform: translateY(-1px);
+}
+ .legacy-scope .btn:active{
+  transform: translateY(0) scale(0.97);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .btn:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+ .legacy-scope .btn:disabled::after{
+  display: none;
+}
+ .legacy-scope .btn svg{
+  flex: none;
+}
+
+ .legacy-scope .btn--primary{
+  background: linear-gradient(165deg, var(--cinnabar-bright), var(--cinnabar) 70%);
+  border-color: var(--cinnabar-deep);
+  color: #fdf3ee;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.4),
+    0 2px 7px rgba(151, 41, 30, 0.28);
+}
+ .legacy-scope .btn--primary:hover{
+  background: linear-gradient(165deg, var(--cinnabar-bright), var(--cinnabar-deep));
+  border-color: var(--cinnabar-deep);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.45),
+    0 5px 14px rgba(151, 41, 30, 0.32);
+  transform: translateY(-1px);
+}
+ .legacy-scope .btn--primary:active{
+  box-shadow: inset 0 1px 2px rgba(120, 30, 22, 0.35);
+}
+/* a paler ripple reads better on the saturated cinnabar fills */
+ .legacy-scope .btn--primary::after, .legacy-scope .btn--danger:hover::after{
+  background: radial-gradient(
+    circle,
+    rgba(255, 240, 232, 0.4),
+    rgba(255, 240, 232, 0) 60%
+  );
+}
+
+ .legacy-scope .btn--ghost{
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-muted);
+  padding: 7px 12px;
+  box-shadow: none;
+}
+ .legacy-scope .btn--ghost:hover{
+  background: var(--paper-raised);
+  border-color: var(--line-soft);
+  color: var(--ink);
+  box-shadow: var(--shadow-inset);
+  transform: none;
+}
+
+ .legacy-scope .btn--danger{
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-deep);
+  background: transparent;
+  box-shadow: none;
+}
+ .legacy-scope .btn--danger:hover{
+  background: var(--cinnabar);
+  border-color: var(--cinnabar-deep);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(151, 41, 30, 0.26);
+}
+
+ .legacy-scope .btn--sm{
+  padding: 5px 12px;
+  font-size: 12px;
+}
+ .legacy-scope .btn--icon{
+  padding: 7px;
+  width: 33px;
+  height: 33px;
+}
+
+/* ---------- inputs ---------- */
+ .legacy-scope .field{
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+ .legacy-scope .field__label{
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  padding-left: 1px;
+}
+ .legacy-scope .input, .legacy-scope .textarea, .legacy-scope .select{
+  width: 100%;
+  padding: 9px 13px;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 2px rgba(72, 56, 36, 0.04);
+  transition: border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out);
+  user-select: text;
+}
+ .legacy-scope .input::placeholder, .legacy-scope .textarea::placeholder{
+  color: var(--ink-ghost);
+  transition: color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .input:hover, .legacy-scope .textarea:hover, .legacy-scope .select:hover{
+  border-color: var(--ink-ghost);
+}
+/* on focus the placeholder lightens and the cinnabar ink-ring blooms outward */
+ .legacy-scope .input:focus::placeholder, .legacy-scope .textarea:focus::placeholder{
+  color: var(--line-strong);
+}
+ .legacy-scope .input:focus, .legacy-scope .textarea:focus, .legacy-scope .select:focus{
+  outline: none;
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--cinnabar-wash),
+    inset 0 1px 2px rgba(72, 56, 36, 0.04);
+  background: var(--paper-raised);
+  animation: input-bloom var(--dur-3) var(--ease-out);
+}
+@keyframes input-bloom {
+  0% {
+    box-shadow: 0 0 0 0 var(--cinnabar-wash-2),
+      inset 0 1px 2px rgba(72, 56, 36, 0.04);
+  }
+  60% {
+    box-shadow: 0 0 0 5px rgba(183, 50, 37, 0.05),
+      inset 0 1px 2px rgba(72, 56, 36, 0.04);
+  }
+  100% {
+    box-shadow: 0 0 0 3px var(--cinnabar-wash),
+      inset 0 1px 2px rgba(72, 56, 36, 0.04);
+  }
+}
+ .legacy-scope .textarea{
+  resize: vertical;
+  line-height: 1.75;
+  min-height: 92px;
+  font-family: var(--serif);
+  font-size: 14.5px;
+}
+ .legacy-scope .select{
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%238a8074' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 30px;
+  cursor: pointer;
+}
+
+/* ---------- chips / badges ---------- */
+ .legacy-scope .chip{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+ .legacy-scope .chip svg{
+  opacity: 0.7;
+}
+ .legacy-scope .chip--accent{
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .chip--jade{
+  border-color: rgba(75, 93, 87, 0.3);
+  background: rgba(75, 93, 87, 0.08);
+  color: var(--dai);
+}
+ .legacy-scope .badge{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: var(--serif);
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.06em;
+}
+ .legacy-scope .badge--write{
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  border: 1px solid var(--cinnabar-wash-2);
+}
+ .legacy-scope .badge--read{
+  background: rgba(75, 93, 87, 0.1);
+  color: var(--dai);
+  border: 1px solid rgba(75, 93, 87, 0.22);
+}
+
+/* importance dots */
+ .legacy-scope .dots{
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+ .legacy-scope .dots__dot{
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+ .legacy-scope .dots__dot.is-on{
+  background: var(--cinnabar);
+}
+
+/* ---------- paper-slip cards ---------- */
+ .legacy-scope .slip-grid{
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(284px, 1fr));
+  gap: 18px;
+}
+ .legacy-scope .slip{
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 17px 18px 15px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  transition: box-shadow var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+  overflow: hidden;
+}
+/* a fine cinnabar seam down the binding edge wells up from the centre on hover */
+ .legacy-scope .slip::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(
+    180deg,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  opacity: 0;
+  transform: scaleY(0.4);
+  transform-origin: center;
+  transition: opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .slip:hover{
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-raised);
+  border-color: var(--line-strong);
+}
+ .legacy-scope .slip:hover::before{
+  opacity: 0.85;
+  transform: scaleY(1);
+}
+ .legacy-scope .slip:active{
+  transform: translateY(-1px);
+}
+ .legacy-scope .slip__title{
+  transition: color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .slip:hover .slip__title{
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .slip__top{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-right: 58px;
+}
+ .legacy-scope .slip__title{
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+ .legacy-scope .slip__summary{
+  font-family: var(--serif);
+  font-size: 13.5px;
+  color: var(--ink-muted);
+  line-height: 1.75;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+ .legacy-scope .slip__meta{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+ .legacy-scope .slip__tags{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+ .legacy-scope .slip__kind{
+  position: absolute;
+  top: 15px;
+  right: 16px;
+  z-index: 1;
+}
+ .legacy-scope .slip__score{
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  letter-spacing: 0.02em;
+}
+
+/* tool card */
+ .legacy-scope .tool-card{
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 17px 18px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  transition: box-shadow var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+  overflow: hidden;
+}
+ .legacy-scope .tool-card::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--dai), #2f3d38);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transform-origin: center;
+  transition: opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .tool-card:hover{
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-raised);
+  border-color: var(--line-strong);
+}
+ .legacy-scope .tool-card:hover::before{
+  opacity: 0.7;
+  transform: scaleY(1);
+}
+ .legacy-scope .tool-card__name{
+  transition: color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .tool-card:hover .tool-card__name{
+  color: var(--dai);
+}
+ .legacy-scope .tool-card__head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+ .legacy-scope .tool-card__name{
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+ .legacy-scope .tool-card__desc{
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.7;
+  min-height: 2.6em;
+}
+ .legacy-scope .tool-card__chips{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+  margin-top: auto;
+  border-top: 1px dashed var(--line);
+}
+
+/* ---------- chapters: split layout ---------- */
+ .legacy-scope .chapters{
+  display: flex;
+  width: 100%;
+  min-height: 0;
+}
+ .legacy-scope .chapters__list{
+  width: 270px;
+  flex: 0 0 270px;
+  border-right: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: linear-gradient(180deg, rgba(231, 223, 205, 0.32), transparent 120px);
+}
+ .legacy-scope .chapters__listhead{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px 11px;
+  gap: 8px;
+}
+ .legacy-scope .chapters__listhead h3{
+  font-size: 14px;
+  color: var(--ink-soft);
+  letter-spacing: 0.12em;
+  padding-left: 0.12em;
+}
+ .legacy-scope .chapters__files{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+ .legacy-scope .filegroup__label{
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--ink-ghost);
+  padding: 14px 8px 6px;
+  padding-left: calc(8px + 0.2em);
+}
+ .legacy-scope .file-item{
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-size: 13.5px;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+ .legacy-scope .file-item:hover{
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+ .legacy-scope .file-item.is-active{
+  background: var(--paper-raised);
+  color: var(--ink);
+  border-color: var(--line-soft);
+  font-weight: 600;
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .file-item.is-active::before{
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 17px;
+  border-radius: 4px / 7px;
+  background: linear-gradient(180deg, var(--cinnabar-bright), var(--cinnabar-deep));
+}
+ .legacy-scope .file-item__icon{
+  color: var(--ink-faint);
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+ .legacy-scope .file-item.is-active .file-item__icon{
+  color: var(--cinnabar);
+}
+ .legacy-scope .file-item__name{
+  flex: 1;
+  font-family: var(--serif);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+ .legacy-scope .file-item__dot{
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--cinnabar-wash);
+  flex: none;
+}
+
+/* editor / writing surface */
+ .legacy-scope .editor{
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+ .legacy-scope .editor__bar{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 22px;
+  border-bottom: 1px solid var(--line-soft);
+}
+ .legacy-scope .editor__path{
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+  overflow: hidden;
+}
+ .legacy-scope .editor__path > svg{
+  color: var(--cinnabar);
+  flex: none;
+  align-self: center;
+}
+ .legacy-scope .editor__path strong{
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--ink);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+ .legacy-scope .editor__path-sub{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+ .legacy-scope .editor__status{
+  font-size: 11.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+ .legacy-scope .editor__status.is-dirty{
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .editor__status .ink-mark{
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--cinnabar-wash);
+}
+/* the writing well — a faint vignette frames the centered manuscript sheet */
+ .legacy-scope .editor__surface-wrap{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 30px 28px 72px;
+  background: radial-gradient(
+    120% 70% at 50% 0%,
+    rgba(120, 96, 64, 0.05),
+    transparent 70%
+  );
+}
+/* 稿纸 — the sheet itself: lifted paper with faint ruled baselines */
+ .legacy-scope .editor__sheet{
+  width: 100%;
+  max-width: 760px;
+  min-height: 100%;
+  background: var(--paper-raised);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(2em - 1px),
+    rgba(120, 96, 64, 0.08) calc(2em - 1px),
+    rgba(120, 96, 64, 0.08) 2em
+  );
+  background-position: 0 0.55em;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  padding: 40px 48px 56px;
+  /* a slim cinnabar margin rule on the left, like a manuscript */
+  position: relative;
+}
+ .legacy-scope .editor__sheet::before{
+  content: "";
+  position: absolute;
+  left: 30px;
+  top: 24px;
+  bottom: 24px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    var(--cinnabar-wash-2) 12%,
+    var(--cinnabar-wash-2) 88%,
+    transparent
+  );
+}
+ .legacy-scope .editor__surface{
+  display: block;
+  width: 100%;
+  min-height: calc(100vh - 320px);
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 16.5px;
+  line-height: 2;
+  letter-spacing: 0.03em;
+  user-select: text;
+}
+ .legacy-scope .editor__surface::placeholder{
+  color: var(--ink-ghost);
+}
+ .legacy-scope .editor__count{
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- checkpoints timeline ---------- */
+ .legacy-scope .timeline{
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+  padding-left: 6px;
+}
+ .legacy-scope .cp{
+  position: relative;
+  display: flex;
+  gap: 18px;
+  padding: 2px 0 20px;
+}
+ .legacy-scope .cp__rail{
+  position: relative;
+  width: 16px;
+  flex: none;
+  display: flex;
+  justify-content: center;
+}
+ .legacy-scope .cp__rail::before{
+  content: "";
+  position: absolute;
+  top: 18px;
+  bottom: -6px;
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    var(--line-strong),
+    var(--line-strong) 70%,
+    transparent
+  );
+}
+ .legacy-scope .cp:last-child .cp__rail::before{
+  display: none;
+}
+/* a small cinnabar wax-seal node with an ink core */
+ .legacy-scope .cp__node{
+  position: relative;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  box-shadow: 0 0 0 4px var(--cinnabar-wash),
+    inset 0 0 0 2px rgba(255, 240, 232, 0.35);
+}
+ .legacy-scope .cp:first-child .cp__node{
+  box-shadow: 0 0 0 5px var(--cinnabar-wash-2),
+    inset 0 0 0 2px rgba(255, 240, 232, 0.4);
+}
+ .legacy-scope .cp__card{
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 17px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+ .legacy-scope .cp__card:hover{
+  box-shadow: var(--shadow-raised);
+  border-color: var(--line-strong);
+  transform: translateX(2px);
+}
+ .legacy-scope .cp__label{
+  font-family: var(--serif);
+  font-size: 15.5px;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+ .legacy-scope .cp__meta{
+  display: flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  margin-top: 5px;
+  font-family: var(--sans);
+  letter-spacing: 0.03em;
+}
+ .legacy-scope .cp__meta code{
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ---------- forms / drawer ---------- */
+ .legacy-scope .drawer{
+  width: 366px;
+  flex: 0 0 366px;
+  border-left: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, var(--paper-panel), var(--paper) 90%);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-shadow: inset 1px 0 0 rgba(255, 253, 247, 0.5);
+  animation: drawer-in var(--dur-4) var(--ease-spring);
+}
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+ .legacy-scope .drawer__head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 17px 20px 13px;
+  border-bottom: 1px solid var(--line-soft);
+}
+ .legacy-scope .drawer__head h3{
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+ .legacy-scope .drawer__body{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+ .legacy-scope .drawer__foot{
+  padding: 13px 20px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  gap: 10px;
+  background: var(--paper-panel);
+}
+
+/* ---------- toolbar / search rows ---------- */
+ .legacy-scope .toolbar{
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 15px 26px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+}
+ .legacy-scope .toolbar__label{
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  padding-left: 0.12em;
+}
+ .legacy-scope .search-box{
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+  max-width: 440px;
+}
+ .legacy-scope .search-box svg{
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-ghost);
+  pointer-events: none;
+  z-index: 1;
+  transition: color var(--dur-2) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .search-box .input{
+  padding-left: 38px;
+}
+/* a brush-loaded ink underline that grows from the centre out on focus */
+ .legacy-scope .search-box::after{
+  content: "";
+  position: absolute;
+  left: 13px;
+  right: 13px;
+  bottom: 5px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--cinnabar) 18%,
+    var(--cinnabar-deep) 50%,
+    var(--cinnabar) 82%,
+    transparent
+  );
+  transform: scaleX(0);
+  transform-origin: center;
+  opacity: 0;
+  transition: transform var(--dur-3) var(--ease-brush),
+    opacity var(--dur-2) var(--ease-out);
+  pointer-events: none;
+}
+ .legacy-scope .search-box:focus-within::after{
+  transform: scaleX(1);
+  opacity: 0.7;
+}
+ .legacy-scope .search-box:focus-within svg{
+  color: var(--cinnabar);
+  transform: translateY(-50%) scale(1.08);
+}
+ .legacy-scope .seg{
+  display: inline-flex;
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 2px;
+  box-shadow: inset 0 1px 2px rgba(72, 56, 36, 0.05);
+}
+ .legacy-scope .seg__btn{
+  border: none;
+  background: transparent;
+  padding: 5px 13px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-family: var(--serif);
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+ .legacy-scope .seg__btn:hover{
+  color: var(--ink);
+}
+ .legacy-scope .seg__btn.is-active{
+  background: var(--paper-raised);
+  color: var(--cinnabar-deep);
+  box-shadow: var(--shadow-slip);
+  font-weight: 600;
+}
+
+/* ---------- spinner (ink drop) ---------- */
+ .legacy-scope .spinner{
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+}
+ .legacy-scope .spinner__svg{
+  display: block;
+  animation: spin 1.15s cubic-bezier(0.55, 0.1, 0.45, 0.9) infinite;
+  transform-origin: 50% 50%;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* the drop pulses subtly as the wheel turns, like ink welling up */
+ .legacy-scope .spinner__drop{
+  transform-origin: 18px 18px;
+  animation: drop-breathe 1.15s ease-in-out infinite;
+}
+@keyframes drop-breathe {
+  0%,
+  100% {
+    r: 2.2;
+    opacity: 0.9;
+  }
+  50% {
+    r: 3;
+    opacity: 1;
+  }
+}
+
+ .legacy-scope .loading-block{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 64px 20px;
+  flex: 1;
+}
+ .legacy-scope .loading-block__label{
+  color: var(--ink-faint);
+  font-family: var(--serif);
+  font-size: 13.5px;
+  letter-spacing: 0.16em;
+  padding-left: 0.16em;
+}
+
+/* ---------- empty state ---------- */
+ .legacy-scope .empty{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 16px;
+  padding: 72px 24px;
+  color: var(--ink-faint);
+  flex: 1;
+}
+ .legacy-scope .empty__icon{
+  color: var(--ink-ghost);
+  opacity: 0.55;
+  margin-bottom: 2px;
+}
+ .legacy-scope .empty__title{
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  letter-spacing: 0.08em;
+  padding-left: 0.08em;
+}
+ .legacy-scope .empty__text{
+  font-family: var(--serif);
+  font-size: 13.5px;
+  color: var(--ink-faint);
+  max-width: 360px;
+  line-height: 1.85;
+}
+ .legacy-scope .empty .btn{
+  margin-top: 6px;
+}
+
+/* ---------- toast / banner ---------- */
+ .legacy-scope .banner{
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 16px 11px 17px;
+  margin: 0 26px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.65;
+  border: 1px solid var(--line);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  box-shadow: var(--shadow-inset);
+  overflow: hidden;
+}
+ .legacy-scope .banner::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--line-strong);
+}
+ .legacy-scope .banner--warn{
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .banner--warn::before{
+  background: var(--cinnabar);
+}
+ .legacy-scope .banner--info{
+  border-color: rgba(75, 93, 87, 0.24);
+  background: rgba(75, 93, 87, 0.08);
+  color: var(--dai);
+}
+ .legacy-scope .banner--info::before{
+  background: var(--dai);
+}
+ .legacy-scope .banner svg{
+  flex: none;
+}
+
+ .legacy-scope .toast-wrap{
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+}
+ .legacy-scope .toast{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 18px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--paper-raised);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  box-shadow: var(--shadow-pop);
+  /* enter/exit animation is defined in the motion layer (.toast / .is-leaving) */
+  pointer-events: auto;
+  cursor: pointer;
+}
+ .legacy-scope .toast--ok{
+  background: #3f5a3f;
+}
+ .legacy-scope .toast--err{
+  background: var(--cinnabar-deep);
+  color: #fff;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---------- modal (confirm) ---------- */
+ .legacy-scope .modal-backdrop{
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(40, 32, 22, 0.32);
+  backdrop-filter: blur(2px);
+  animation: fade-in 0.16s ease;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+ .legacy-scope .modal{
+  width: min(420px, calc(100vw - 48px));
+  background: var(--paper-panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  animation: modal-in 0.2s ease;
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+ .legacy-scope .modal__seal{
+  display: flex;
+  justify-content: center;
+  padding: 26px 0 6px;
+}
+ .legacy-scope .modal__body{
+  padding: 8px 28px 6px;
+  text-align: center;
+}
+ .legacy-scope .modal__title{
+  font-size: 19px;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+ .legacy-scope .modal__text{
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-muted);
+  line-height: 1.85;
+}
+ .legacy-scope .modal__text code{
+  font-family: var(--mono);
+  background: var(--paper-sunken);
+  padding: 1px 7px;
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+ .legacy-scope .modal__foot{
+  display: flex;
+  gap: 10px;
+  padding: 18px 26px 22px;
+}
+ .legacy-scope .modal__foot .btn{
+  flex: 1;
+}
+
+/* ---------- providers ---------- */
+ .legacy-scope .prov-card{
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 17px 18px 15px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  transition: box-shadow var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+  overflow: hidden;
+}
+ .legacy-scope .prov-card::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--cinnabar-bright), var(--cinnabar-deep));
+  opacity: 0;
+  transform: scaleY(0.4);
+  transform-origin: center;
+  transition: opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .prov-card:hover{
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-raised);
+  border-color: var(--line-strong);
+}
+ .legacy-scope .prov-card:hover::before{
+  opacity: 0.7;
+  transform: scaleY(1);
+}
+ .legacy-scope .prov-card__glyph{
+  transition: color var(--dur-2) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .prov-card:hover .prov-card__glyph{
+  transform: rotate(-8deg) scale(1.08);
+}
+/* the active provider gets a persistent cinnabar seam + warm wash */
+ .legacy-scope .prov-card.is-active{
+  border-color: var(--cinnabar-wash-2);
+  background: linear-gradient(180deg, var(--paper-raised), var(--cinnabar-wash));
+}
+ .legacy-scope .prov-card.is-active::before{
+  opacity: 0.9;
+  transform: scaleY(1);
+}
+ .legacy-scope .prov-card__head{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+ .legacy-scope .prov-card__name{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  min-width: 0;
+}
+ .legacy-scope .prov-card__glyph{
+  opacity: 0.5;
+  flex: none;
+  color: var(--ink-faint);
+}
+ .legacy-scope .prov-card.is-active .prov-card__glyph{
+  color: var(--cinnabar);
+  opacity: 0.85;
+}
+ .legacy-scope .prov-card__name-text{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+ .legacy-scope .prov-card__current{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-family: var(--serif);
+  letter-spacing: 0.06em;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  color: #fdf3ee;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.4),
+    0 2px 6px rgba(151, 41, 30, 0.26);
+  white-space: nowrap;
+  flex: none;
+}
+ .legacy-scope .prov-card__current svg{
+  fill: #fdf3ee;
+  stroke: none;
+}
+ .legacy-scope .prov-card__hint{
+  font-size: 11px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--ink-ghost);
+  white-space: nowrap;
+  flex: none;
+}
+ .legacy-scope .badge--proto{
+  background: rgba(75, 93, 87, 0.1);
+  color: var(--dai);
+  border: 1px solid rgba(75, 93, 87, 0.22);
+  flex: none;
+}
+ .legacy-scope .badge--proto.is-anthropic{
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .badge--proto.is-gemini{
+  background: rgba(55, 92, 128, 0.09);
+  color: #375c80;
+  border-color: rgba(55, 92, 128, 0.22);
+}
+ .legacy-scope .prov-card__url{
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.01em;
+  word-break: break-all;
+  line-height: 1.55;
+}
+ .legacy-scope .prov-card__mode{
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid rgba(75, 93, 87, 0.2);
+  border-radius: var(--radius-sm);
+  background: rgba(75, 93, 87, 0.07);
+  color: var(--dai);
+  font-size: 11.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+}
+ .legacy-scope .prov-card__mode svg{
+  flex: none;
+  opacity: 0.78;
+}
+ .legacy-scope .prov-card__section{
+  display: flex;
+  flex-direction: column;
+}
+ .legacy-scope .prov-card__rowlabel{
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  margin-bottom: 7px;
+}
+ .legacy-scope .prov-card__models{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+ .legacy-scope .prov-card__empty{
+  font-size: 12.5px;
+  color: var(--ink-ghost);
+  font-family: var(--serif);
+}
+ .legacy-scope .prov-card__pick{
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+ .legacy-scope .prov-card__pick .select{
+  flex: 1;
+  min-width: 0;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-size: 13px;
+}
+ .legacy-scope .prov-card__foot{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+/* a tag chip — used for model names in cards (read-only) and, with the
+   .is-removable modifier, in the drawer's editor (with star + remove). */
+ .legacy-scope .tag-chip{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 11px;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+ .legacy-scope .tag-chip.is-removable{
+  padding: 3px 4px 3px 9px;
+}
+/* the default model: a soft cinnabar wash */
+ .legacy-scope .tag-chip.is-default{
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+}
+/* the currently-active model: a solid cinnabar fill so it reads as "live" */
+ .legacy-scope .tag-chip.is-current{
+  border-color: var(--cinnabar-deep);
+  background: var(--cinnabar);
+  color: #fdf3ee;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35),
+    0 1px 4px rgba(151, 41, 30, 0.22);
+}
+ .legacy-scope .tag-chip__star{
+  display: inline-flex;
+  color: var(--cinnabar);
+}
+ .legacy-scope .tag-chip__star svg{
+  fill: currentColor;
+  stroke: none;
+}
+ .legacy-scope .tag-chip__star.is-muted{
+  color: var(--cinnabar);
+  opacity: 0.7;
+}
+ .legacy-scope .tag-chip.is-current .tag-chip__star{
+  color: #fdf3ee;
+}
+/* the star toggle inside the editor (sets default model) */
+ .legacy-scope .tag-chip__starbtn{
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--ink-ghost);
+  transition: color 0.16s ease, transform 0.12s ease;
+}
+ .legacy-scope .tag-chip__starbtn:hover{
+  color: var(--cinnabar);
+  transform: scale(1.12);
+}
+ .legacy-scope .tag-chip__starbtn.is-on{
+  color: var(--cinnabar);
+}
+ .legacy-scope .tag-chip__starbtn.is-on svg{
+  fill: currentColor;
+  stroke: none;
+}
+ .legacy-scope .tag-chip__starbtn:focus-visible{
+  outline-offset: 1px;
+}
+ .legacy-scope .tag-chip__x{
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  color: var(--ink-faint);
+  flex: none;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+ .legacy-scope .tag-chip__x:hover{
+  background: var(--cinnabar);
+  color: #fff;
+}
+
+/* the models editor inside the drawer */
+ .legacy-scope .model-editor__list{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+  min-height: 8px;
+}
+ .legacy-scope .model-editor__empty{
+  font-size: 12.5px;
+  color: var(--ink-ghost);
+  font-family: var(--serif);
+  letter-spacing: 0.02em;
+}
+ .legacy-scope .model-editor__add{
+  display: flex;
+  gap: 8px;
+}
+ .legacy-scope .model-editor__add .input, .legacy-scope .model-editor__add .select{
+  flex: 1;
+  min-width: 0;
+}
+ .legacy-scope .model-editor__add .btn{
+  flex: none;
+}
+ .legacy-scope .input-affix{
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+ .legacy-scope .input-affix .input{
+  padding-right: 42px;
+}
+ .legacy-scope .input-affix__btn{
+  position: absolute;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-faint);
+  transition: background 0.16s ease, color 0.16s ease;
+}
+ .legacy-scope .input-affix__btn:hover{
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+}
+
+/* a small helper line under a field */
+ .legacy-scope .field__hint{
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-ghost);
+  font-family: var(--sans);
+  letter-spacing: 0.02em;
+  margin-top: 1px;
+}
+ .legacy-scope .field__hint-icon{
+  flex: none;
+  opacity: 0.8;
+}
+
+/* a faint section divider/label inside the drawer */
+ .legacy-scope .drawer__section-label{
+  font-size: 10.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.22em;
+  color: var(--ink-ghost);
+  text-transform: uppercase;
+  padding: 6px 0 2px;
+  padding-left: 0.22em;
+  border-top: 1px solid var(--line-soft);
+  margin-top: 3px;
+}
+ .legacy-scope .drawer__body > .drawer__section-label:first-child{
+  border-top: none;
+  margin-top: 0;
+}
+
+/* one-click provider quick-fill chips */
+ .legacy-scope .preset-row{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+ .legacy-scope .preset-chip{
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-family: var(--serif);
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  box-shadow: var(--shadow-inset);
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease,
+    transform 0.12s ease;
+}
+ .legacy-scope .preset-chip:hover{
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  transform: translateY(-1px);
+}
+ .legacy-scope .preset-chip:active{
+  transform: translateY(0);
+}
+
+/* the test-connection result box inside the drawer */
+ .legacy-scope .test-result{
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  padding: 11px 13px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-muted);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .test-result.is-ok{
+  border-color: rgba(63, 90, 63, 0.3);
+  background: rgba(63, 90, 63, 0.07);
+}
+ .legacy-scope .test-result.is-err{
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .test-result__title{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  margin-bottom: 6px;
+}
+ .legacy-scope .test-result__body{
+  font-family: var(--serif);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+ .legacy-scope .test-result__busy{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-faint);
+  font-family: var(--serif);
+  letter-spacing: 0.04em;
+}
+ .legacy-scope .test-result__busy code{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+/* two-up field row in the drawer */
+ .legacy-scope .field-row{
+  display: flex;
+  gap: 12px;
+}
+ .legacy-scope .field-row > .field{
+  flex: 1;
+  min-width: 0;
+}
+
+/* ============================================================
+   创作 — Writing Studio
+   ============================================================ */
+ .legacy-scope .studio{
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+}
+
+/* the prompt composer at the top */
+ .legacy-scope .studio__composer{
+  padding: 20px 26px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: linear-gradient(180deg, rgba(231, 223, 205, 0.28), transparent 90px);
+}
+ .legacy-scope .studio__goal{
+  min-height: 80px;
+  max-height: 200px;
+}
+ .legacy-scope .studio__composer-row{
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+ .legacy-scope .studio__title-field{
+  flex: 1;
+  min-width: 0;
+}
+ .legacy-scope .studio__go{
+  flex: none;
+  padding: 10px 22px;
+  font-size: 14px;
+  font-family: var(--serif);
+  letter-spacing: 0.08em;
+  height: 39px;
+}
+
+/* the live + results feed */
+ .legacy-scope .studio__feed{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 26px 36px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* a faint section label with an ink-pulse for the live state */
+ .legacy-scope .studio__section-label{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-family: var(--sans);
+  letter-spacing: 0.16em;
+  color: var(--ink-faint);
+  padding-left: 0.16em;
+  margin: 4px 0 14px;
+}
+ .legacy-scope .studio__section-label svg{
+  opacity: 0.7;
+}
+ .legacy-scope .ink-pulse{
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  box-shadow: 0 0 0 0 var(--cinnabar-wash-2);
+  animation: ink-pulse 1.5s ease-in-out infinite;
+  flex: none;
+}
+@keyframes ink-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--cinnabar-wash-2);
+    opacity: 0.7;
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(183, 50, 37, 0);
+    opacity: 1;
+  }
+}
+
+/* the prominent final answer ("成稿") */
+ .legacy-scope .studio__final{
+  position: relative;
+  margin-bottom: 24px;
+  padding: 20px 22px 18px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--cinnabar-wash-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised), var(--shadow-inset);
+  overflow: hidden;
+  animation: final-reveal 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes final-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+ .legacy-scope .studio__final::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(180deg, var(--cinnabar-bright), var(--cinnabar-deep));
+}
+ .legacy-scope .studio__final-head{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+/* a small stamped wax-seal holding the 成稿 mark */
+ .legacy-scope .studio__final-mark{
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  color: #fdf3ee;
+  background: radial-gradient(
+    circle at 36% 30%,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35),
+    0 1px 4px rgba(151, 41, 30, 0.24);
+}
+ .legacy-scope .studio__final-label{
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.1em;
+  padding-left: 0.1em;
+}
+ .legacy-scope .studio__final-note{
+  margin-left: auto;
+  font-size: 11.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  border-radius: 999px;
+  padding: 2px 11px;
+  white-space: nowrap;
+}
+ .legacy-scope .studio__final-body{
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 2;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+ .legacy-scope .studio__final-hint{
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  font-size: 11.5px;
+  color: var(--ink-ghost);
+  font-family: var(--sans);
+  letter-spacing: 0.02em;
+}
+ .legacy-scope .studio__final-hint code{
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--paper-sunken);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--ink-soft);
+}
+
+/* live steps — a flowing ink scroll where each thought is a node on a spine */
+ .legacy-scope .studio__live{
+  margin-bottom: 8px;
+}
+ .legacy-scope .livefeed{
+  position: relative;
+}
+ .legacy-scope .livestep{
+  position: relative;
+  display: flex;
+  gap: 14px;
+  padding-bottom: 14px;
+  animation: livestep-in 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes livestep-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* the inked spine connecting steps */
+ .legacy-scope .livestep__rail{
+  position: relative;
+  width: 22px;
+  flex: none;
+  display: flex;
+  justify-content: center;
+}
+ .legacy-scope .livestep__rail::before{
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: -6px;
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    var(--line-strong),
+    var(--line-strong) 72%,
+    transparent
+  );
+}
+ .legacy-scope .livestep:last-child .livestep__rail::before{
+  display: none;
+}
+ .legacy-scope .livestep__node{
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 36% 30%, #4f635c, #2f3d38);
+  color: #f5efe3;
+  box-shadow: 0 0 0 4px rgba(75, 93, 87, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+ .legacy-scope .livestep__node svg{
+  opacity: 0.95;
+}
+ .legacy-scope .livestep.is-active .livestep__node{
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  box-shadow: 0 0 0 4px var(--cinnabar-wash),
+    inset 0 0 0 1px rgba(255, 240, 232, 0.4);
+}
+ .legacy-scope .livestep__node-pulse{
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 0 0 0 rgba(255, 240, 232, 0.7);
+  animation: node-pulse 1.5s ease-in-out infinite;
+}
+@keyframes node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 240, 232, 0.6);
+    transform: scale(0.9);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(255, 240, 232, 0);
+    transform: scale(1);
+  }
+}
+ .legacy-scope .livestep__node--ghost{
+  background: var(--paper-sunken);
+  border: 1px dashed var(--line-strong);
+  box-shadow: none;
+}
+ .legacy-scope .livestep__body{
+  flex: 1;
+  min-width: 0;
+  padding: 13px 16px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+ .legacy-scope .livestep.is-active .livestep__body{
+  border-color: var(--cinnabar-wash-2);
+  box-shadow: var(--shadow-slip), 0 0 0 3px var(--cinnabar-wash);
+}
+ .legacy-scope .livestep__head{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-bottom: 8px;
+}
+ .legacy-scope .livestep__no{
+  font-family: var(--serif);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  letter-spacing: 0.06em;
+}
+ .legacy-scope .livestep__tag{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.06em;
+  color: var(--dai);
+  background: rgba(75, 93, 87, 0.08);
+  border: 1px solid rgba(75, 93, 87, 0.22);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+ .legacy-scope .livestep__tag svg{
+  opacity: 0.8;
+}
+ .legacy-scope .livestep__tag.is-tool{
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .livestep__text{
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+/* a blinking ink brush-tip caret trailing the live thought */
+ .legacy-scope .ink-caret{
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 3px;
+  vertical-align: -0.18em;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--cinnabar), var(--cinnabar-deep));
+  animation: ink-caret 1.05s steps(1, end) infinite;
+}
+@keyframes ink-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+ .legacy-scope .livestep__tools{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+ .legacy-scope .toolpill{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 11px 3px 4px;
+  font-size: 11.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  border: 1px solid var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  transition: background 0.16s ease, border-color 0.16s ease,
+    transform 0.12s ease;
+}
+ .legacy-scope .toolpill:hover{
+  background: var(--cinnabar-wash-2);
+  transform: translateY(-1px);
+}
+ .legacy-scope .toolpill__glyph{
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  color: #fdf3ee;
+  flex: none;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35);
+}
+ .legacy-scope .toolpill__verb{
+  font-family: var(--serif);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+ .legacy-scope .toolpill code{
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+ .legacy-scope .toolpill__arg{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  opacity: 0.78;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+  padding-left: 5px;
+  border-left: 1px solid var(--cinnabar-wash-2);
+}
+ .legacy-scope .livestep--pending{
+  padding-bottom: 0;
+}
+ .legacy-scope .livestep__pending-body{
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  overflow: hidden;
+}
+ .legacy-scope .livestep__brush{
+  position: absolute;
+  right: -18px;
+  top: 50%;
+  width: 150px;
+  height: 70px;
+  transform: translateY(-50%) rotate(-6deg);
+  color: var(--cinnabar);
+  opacity: 0.08;
+  pointer-events: none;
+  animation: brush-drift 3.4s ease-in-out infinite;
+}
+@keyframes brush-drift {
+  0%,
+  100% {
+    opacity: 0.06;
+    transform: translateY(-50%) rotate(-6deg) translateX(0);
+  }
+  50% {
+    opacity: 0.13;
+    transform: translateY(-50%) rotate(-6deg) translateX(-8px);
+  }
+}
+ .legacy-scope .livestep__pending-text{
+  font-family: var(--serif);
+  font-size: 13.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+}
+
+/* a calm warming state before the first step arrives */
+ .legacy-scope .studio__warming{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 20px;
+  flex: 1;
+}
+ .legacy-scope .studio__warming-orb{
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+}
+ .legacy-scope .studio__warming-orb .spinner{
+  position: relative;
+  z-index: 1;
+}
+ .legacy-scope .studio__warming-brush{
+  position: absolute;
+  inset: -8px -20px;
+  width: 124px;
+  height: 100px;
+  color: var(--cinnabar);
+  opacity: 0.1;
+  pointer-events: none;
+  animation: warm-bloom 3s ease-in-out infinite;
+}
+@keyframes warm-bloom {
+  0%,
+  100% {
+    opacity: 0.07;
+    transform: scale(0.96) rotate(-4deg);
+  }
+  50% {
+    opacity: 0.16;
+    transform: scale(1.04) rotate(-4deg);
+  }
+}
+ .legacy-scope .studio__warming-text{
+  font-family: var(--serif);
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  color: var(--ink-muted);
+  padding-left: 0.2em;
+}
+ .legacy-scope .studio__warming-sub{
+  font-family: var(--serif);
+  font-size: 12.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.06em;
+}
+
+/* the full transcript */
+ .legacy-scope .studio__transcript{
+  margin-top: 22px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+ .legacy-scope .studio__messages{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+ .legacy-scope .msg{
+  display: flex;
+  gap: 13px;
+}
+ .legacy-scope .msg__rail{
+  position: relative;
+  flex: none;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+/* a faint ink thread linking the turns of the conversation */
+ .legacy-scope .msg__rail::before{
+  content: "";
+  position: absolute;
+  top: 32px;
+  bottom: -14px;
+  width: 2px;
+  background: linear-gradient(180deg, var(--line-soft), transparent);
+}
+ .legacy-scope .studio__messages .msg:last-child .msg__rail::before{
+  display: none;
+}
+ .legacy-scope .msg__icon{
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--paper-raised);
+  color: var(--ink-faint);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .msg__body{
+  flex: 1;
+  min-width: 0;
+  padding: 12px 15px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+}
+ .legacy-scope .msg__head{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+ .legacy-scope .msg__role{
+  font-family: var(--serif);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  padding-left: 0.1em;
+}
+ .legacy-scope .msg__tag{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
+  color: var(--ink-muted);
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+ .legacy-scope .msg__tag svg{
+  opacity: 0.8;
+}
+ .legacy-scope .msg__tag.is-ok{
+  color: #3f5a3f;
+  background: rgba(63, 90, 63, 0.08);
+  border-color: rgba(63, 90, 63, 0.26);
+}
+ .legacy-scope .msg__tag.is-err{
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .msg__text{
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+ .legacy-scope .msg__text--muted{
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+ .legacy-scope .msg__text code, .legacy-scope .msg__args code{
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--paper-sunken);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--ink-soft);
+}
+ .legacy-scope .msg__args{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+/* role accents: ink rail tints */
+ .legacy-scope .msg--user .msg__icon{
+  color: var(--ink-soft);
+  border-color: var(--line-strong);
+}
+ .legacy-scope .msg--assistant .msg__icon{
+  color: var(--cinnabar);
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+}
+ .legacy-scope .msg--assistant .msg__body{
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .msg--tool .msg__icon{
+  color: var(--dai);
+  border-color: rgba(75, 93, 87, 0.3);
+  background: rgba(75, 93, 87, 0.07);
+}
+ .legacy-scope .msg--system .msg__icon{
+  opacity: 0.8;
+}
+ .legacy-scope .msg--system .msg__body{
+  background: var(--paper-panel);
+  border-style: dashed;
+}
+
+/* the no-provider notice */
+ .legacy-scope .studio__notice{
+  position: relative;
+  align-self: center;
+  max-width: 460px;
+  margin: 28px auto;
+  padding: 30px 30px 26px;
+  text-align: center;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised), var(--shadow-inset);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+ .legacy-scope .studio__notice-flourish{
+  position: absolute;
+  top: -10px;
+  right: -30px;
+  width: 200px;
+  height: 100px;
+  opacity: 0.05;
+  transform: rotate(-8deg);
+  color: var(--ink);
+  pointer-events: none;
+}
+ .legacy-scope .studio__notice-seal{
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .studio__notice-title{
+  font-size: 19px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  padding-left: 0.08em;
+}
+ .legacy-scope .studio__notice-text{
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--ink-muted);
+  max-width: 380px;
+}
+ .legacy-scope .studio__notice-err{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  width: 100%;
+  word-break: break-word;
+  text-align: left;
+}
+ .legacy-scope .studio__notice .btn{
+  margin-top: 4px;
+}
+
+/* ============================================================
+   协作 — Collaboration / version control
+   ============================================================ */
+ .legacy-scope .collab-grid{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+  margin-bottom: 24px;
+}
+ .legacy-scope .collab-card{
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 19px 17px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  overflow: hidden;
+  transition: box-shadow var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .collab-card:hover{
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-raised);
+  border-color: var(--line-strong);
+}
+ .legacy-scope .collab-card::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  opacity: 0.7;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .collab-card:hover::before{
+  opacity: 1;
+}
+ .legacy-scope .collab-card--commit::before{
+  background: linear-gradient(180deg, var(--cinnabar-bright), var(--cinnabar-deep));
+}
+ .legacy-scope .collab-card--branch::before{
+  background: linear-gradient(180deg, var(--dai), #2f3d38);
+}
+ .legacy-scope .collab-card--diff::before{
+  background: linear-gradient(180deg, #9a8350, #6f5d34);
+}
+/* the diff card spans the full row when it can, for readable output */
+ .legacy-scope .collab-card--diff{
+  grid-column: 1 / -1;
+}
+ .legacy-scope .collab-card__head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+ .legacy-scope .collab-card__title{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.04em;
+}
+ .legacy-scope .collab-card__title svg{
+  color: var(--ink-faint);
+}
+ .legacy-scope .collab-card__desc{
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  line-height: 1.7;
+  font-family: var(--sans);
+  letter-spacing: 0.02em;
+}
+ .legacy-scope .collab-commit__row{
+  display: flex;
+  gap: 9px;
+  margin-top: 2px;
+}
+ .legacy-scope .collab-commit__row .input{
+  flex: 1;
+  min-width: 0;
+}
+ .legacy-scope .collab-commit__row .btn{
+  flex: none;
+}
+
+/* branches */
+ .legacy-scope .collab-branches{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+ .legacy-scope .collab-branches__loading{
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--serif);
+  font-size: 13px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+ .legacy-scope .collab-empty-line{
+  font-size: 12.5px;
+  color: var(--ink-ghost);
+  font-family: var(--serif);
+  letter-spacing: 0.02em;
+}
+ .legacy-scope .branch-chip{
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  font-size: 13px;
+  font-family: var(--serif);
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  box-shadow: var(--shadow-inset);
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease,
+    transform 0.12s ease;
+}
+ .legacy-scope .branch-chip:hover:not(:disabled){
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  transform: translateY(-1px);
+}
+ .legacy-scope .branch-chip:disabled{
+  cursor: default;
+}
+ .legacy-scope .branch-chip svg{
+  flex: none;
+  opacity: 0.7;
+}
+ .legacy-scope .branch-chip__name{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+ .legacy-scope .branch-chip.is-current{
+  border-color: var(--cinnabar-deep);
+  background: var(--cinnabar);
+  color: #fdf3ee;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35),
+    0 1px 4px rgba(151, 41, 30, 0.22);
+  opacity: 1;
+}
+ .legacy-scope .branch-chip.is-current svg{
+  opacity: 0.95;
+}
+ .legacy-scope .branch-chip__cur{
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  background: rgba(255, 240, 232, 0.25);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+/* diff / log text output */
+ .legacy-scope .collab-diff{
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 2px rgba(72, 56, 36, 0.05);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* the rich, line-coloured diff view */
+ .legacy-scope .diffview{
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(72, 56, 36, 0.05);
+  animation: fade-in 0.24s ease;
+}
+ .legacy-scope .diffview__stat{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: var(--paper-panel);
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+ .legacy-scope .diffview__stat-add{
+  color: #3f5a3f;
+  font-weight: 600;
+}
+ .legacy-scope .diffview__stat-del{
+  color: var(--cinnabar-deep);
+  font-weight: 600;
+}
+ .legacy-scope .diffview__stat-lbl{
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
+ .legacy-scope .diffview__body{
+  margin: 0;
+  padding: 8px 0;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--paper-sunken);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre;
+  user-select: text;
+}
+ .legacy-scope .diffline{
+  display: flex;
+  padding: 0 14px 0 0;
+  color: var(--ink-soft);
+}
+ .legacy-scope .diffline__sign{
+  flex: none;
+  width: 22px;
+  text-align: center;
+  user-select: none;
+  opacity: 0.55;
+}
+ .legacy-scope .diffline__text{
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+ .legacy-scope .diffline--add{
+  background: rgba(63, 90, 63, 0.1);
+  color: #34492f;
+}
+ .legacy-scope .diffline--add .diffline__sign{
+  color: #3f5a3f;
+  opacity: 0.9;
+}
+ .legacy-scope .diffline--del{
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .diffline--del .diffline__sign{
+  color: var(--cinnabar);
+  opacity: 0.9;
+}
+ .legacy-scope .diffline--hunk{
+  background: rgba(75, 93, 87, 0.1);
+  color: var(--dai);
+  font-weight: 600;
+}
+ .legacy-scope .diffline--meta{
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* history actions + word delta */
+ .legacy-scope .collab-history{
+  margin-top: 4px;
+}
+ .legacy-scope .collab-history__head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+ .legacy-scope .collab-actions{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+ .legacy-scope .word-delta{
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-left: 8px;
+}
+ .legacy-scope .word-delta.is-add{
+  color: #3f5a3f;
+  background: rgba(63, 90, 63, 0.1);
+  border: 1px solid rgba(63, 90, 63, 0.26);
+}
+ .legacy-scope .word-delta.is-del{
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+}
+ .legacy-scope .word-delta.is-flat{
+  color: var(--ink-faint);
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+}
+/* total word count on a commit row */
+ .legacy-scope .cp__total{
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+/* a "最新" wax-seal badge on the newest commit */
+ .legacy-scope .cp__latest{
+  display: inline-block;
+  vertical-align: 1px;
+  margin-right: 8px;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #fdf3ee;
+  background: linear-gradient(165deg, var(--cinnabar-bright), var(--cinnabar-deep));
+  border-radius: 999px;
+  padding: 1px 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35);
+}
+/* the commit currently being diffed glows softly */
+ .legacy-scope .cp.is-diffed .cp__card{
+  border-color: var(--cinnabar-wash-2);
+  box-shadow: var(--shadow-slip), 0 0 0 3px var(--cinnabar-wash);
+}
+ .legacy-scope .cp.is-diffed .cp__node{
+  box-shadow: 0 0 0 5px var(--cinnabar-wash-2),
+    inset 0 0 0 2px rgba(255, 240, 232, 0.4);
+}
+/* the active "对比" button reads as currently-selected */
+ .legacy-scope .btn--sm.is-active{
+  border-color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  box-shadow: inset 0 0 0 1px var(--cinnabar-wash-2);
+}
+
+/* ---------- misc ---------- */
+ .legacy-scope .muted{
+  color: var(--ink-faint);
+}
+ .legacy-scope .row{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+ .legacy-scope .row--between{
+  justify-content: space-between;
+}
+ .legacy-scope .count-pill{
+  font-size: 11px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 11px;
+  white-space: nowrap;
+}
+ .legacy-scope .kbd{
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+}
+ .legacy-scope .divider-v{
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 3px 0;
+}
+
+/* responsive: narrow windows collapse the split panes gracefully */
+@media (max-width: 1040px) {
+   .legacy-scope .editor__sheet{
+    padding: 36px 40px 48px;
+  }
+}
+@media (max-width: 920px) {
+   .legacy-scope .titlebar__sub{
+    display: none;
+  }
+   .legacy-scope .drawer{
+    width: 326px;
+    flex-basis: 326px;
+  }
+   .legacy-scope .chapters__list{
+    width: 224px;
+    flex-basis: 224px;
+  }
+   .legacy-scope .panel__header{
+    padding: 20px 22px 16px;
+  }
+   .legacy-scope .toolbar, .legacy-scope .scroll-area{
+    padding-left: 22px;
+    padding-right: 22px;
+  }
+   .legacy-scope .editor__sheet{
+    padding: 30px 30px 44px;
+  }
+   .legacy-scope .editor__sheet::before{
+    display: none;
+  }
+   .legacy-scope .studio__composer-row{
+    flex-direction: column;
+    align-items: stretch;
+  }
+   .legacy-scope .studio__go{
+    justify-content: center;
+  }
+}
+@media (max-width: 760px) {
+   .legacy-scope{
+    --sidebar-w: 66px;
+  }
+   .legacy-scope .sidebar{
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+   .legacy-scope .sidebar__title, .legacy-scope .sidebar__caption, .legacy-scope .nav__label, .legacy-scope .nav-item__label, .legacy-scope .nav-item__hint, .legacy-scope .sidebar__foot{
+    display: none;
+  }
+   .legacy-scope .sidebar__head{
+    justify-content: center;
+    padding-bottom: 14px;
+  }
+   .legacy-scope .nav-item{
+    justify-content: center;
+    padding: 11px;
+    gap: 0;
+  }
+   .legacy-scope .nav-item.is-active::before{
+    left: -10px;
+    height: 20px;
+  }
+   .legacy-scope .panel__title-cn{
+    font-size: 22px;
+  }
+}
+/* very narrow: let slips relax to a single column */
+@media (max-width: 560px) {
+   .legacy-scope .slip-grid{
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   运笔 — Motion layer
+   A consistent, GPU-cheap (transform/opacity) set of entrances and
+   micro-interactions shared across every screen. Durations + easings
+   come from the tokens in theme.css; everything here collapses to a
+   still frame under prefers-reduced-motion (guard lives in theme.css).
+   ============================================================ */
+
+/* ---- screen / page transition ----
+   The router shell wraps each screen in .screen-fade keyed by screen id,
+   so switching nav cross-fades + lifts the new screen into place. */
+ .legacy-scope .screen-fade{
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: screen-in var(--dur-5) var(--ease-out);
+}
+@keyframes screen-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.994);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* the paper panel itself settles in with a faint rise — reinforces the
+   "a fresh sheet is laid down" feeling. Opacity is left to the parent
+   .screen-fade so the two don't double-dim; the panel only lifts. */
+ .legacy-scope .panel{
+  animation: panel-settle var(--dur-4) var(--ease-out);
+}
+@keyframes panel-settle {
+  0% {
+    transform: translateY(8px) scale(0.996);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+/* the title's brush underline draws itself on each panel mount */
+ .legacy-scope .panel__title-stroke{
+  transform-origin: left center;
+  animation: stroke-draw 0.6s var(--ease-brush) both;
+  animation-delay: 0.1s;
+}
+@keyframes stroke-draw {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  60% {
+    opacity: 0.92;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 0.92;
+  }
+}
+/* the corner brush flourish breathes in gently */
+ .legacy-scope .panel__flourish{
+  animation: flourish-in var(--dur-ink) var(--ease-out) both;
+}
+@keyframes flourish-in {
+  0% {
+    opacity: 0;
+    transform: rotate(-7deg) translateX(10px);
+  }
+  100% {
+    opacity: 0.055;
+    transform: rotate(-7deg) translateX(0);
+  }
+}
+
+/* ---- staggered card / list entrance ----
+   Items rise + fade as they appear. The :nth-child delays create a
+   gentle cascade down a grid or timeline. Animation runs once on mount
+   (React keeps keyed nodes mounted, so hovers never retrigger it). */
+/* NB: fill-mode is `backwards` (not `both`) so the final keyframe is NOT
+   persisted — otherwise it would lock `transform` and block the hover-lift
+   transitions these cards rely on. `backwards` only holds the start frame
+   during animation-delay; at the end the element returns to its CSS rest
+   state (which equals the 100% keyframe, so the handoff is seamless). */
+ .legacy-scope .slip, .legacy-scope .tool-card, .legacy-scope .prov-card, .legacy-scope .collab-card, .legacy-scope .cp{
+  animation: card-rise var(--dur-4) var(--ease-out) backwards;
+}
+@keyframes card-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+/* stagger the first dozen — beyond that the cascade has done its job */
+ .legacy-scope .slip-grid > :nth-child(1), .legacy-scope .collab-grid > :nth-child(1), .legacy-scope .timeline > :nth-child(1){
+  animation-delay: 0.02s;
+}
+ .legacy-scope .slip-grid > :nth-child(2), .legacy-scope .collab-grid > :nth-child(2), .legacy-scope .timeline > :nth-child(2){
+  animation-delay: 0.06s;
+}
+ .legacy-scope .slip-grid > :nth-child(3), .legacy-scope .collab-grid > :nth-child(3), .legacy-scope .timeline > :nth-child(3){
+  animation-delay: 0.1s;
+}
+ .legacy-scope .slip-grid > :nth-child(4), .legacy-scope .collab-grid > :nth-child(4), .legacy-scope .timeline > :nth-child(4){
+  animation-delay: 0.14s;
+}
+ .legacy-scope .slip-grid > :nth-child(5), .legacy-scope .collab-grid > :nth-child(5), .legacy-scope .timeline > :nth-child(5){
+  animation-delay: 0.18s;
+}
+ .legacy-scope .slip-grid > :nth-child(6), .legacy-scope .timeline > :nth-child(6){
+  animation-delay: 0.22s;
+}
+ .legacy-scope .slip-grid > :nth-child(7), .legacy-scope .timeline > :nth-child(7){
+  animation-delay: 0.26s;
+}
+ .legacy-scope .slip-grid > :nth-child(8), .legacy-scope .timeline > :nth-child(8){
+  animation-delay: 0.3s;
+}
+ .legacy-scope .slip-grid > :nth-child(9){
+  animation-delay: 0.34s;
+}
+ .legacy-scope .slip-grid > :nth-child(n + 10){
+  animation-delay: 0.38s;
+}
+
+/* file rows in the chapter list slide in from the binding edge */
+ .legacy-scope .chapters__files .file-item{
+  animation: file-slide var(--dur-3) var(--ease-out) both;
+}
+@keyframes file-slide {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+ .legacy-scope .chapters__files .file-item:nth-child(2){
+  animation-delay: 0.03s;
+}
+ .legacy-scope .chapters__files .file-item:nth-child(3){
+  animation-delay: 0.06s;
+}
+ .legacy-scope .chapters__files .file-item:nth-child(4){
+  animation-delay: 0.09s;
+}
+ .legacy-scope .chapters__files .file-item:nth-child(5){
+  animation-delay: 0.12s;
+}
+ .legacy-scope .chapters__files .file-item:nth-child(n + 6){
+  animation-delay: 0.15s;
+}
+/* the active file row's brush nib grows in */
+ .legacy-scope .file-item.is-active::before{
+  animation: nav-ink 0.36s var(--ease-brush) forwards;
+}
+
+/* chips that pop into existence (branches, models, presets) get a soft
+   spring so adding/removing one feels alive without being noisy.
+   `backwards` (not `both`) so the persisted scale doesn't block their
+   hover-lift transitions — see the note on .slip card-rise above. */
+ .legacy-scope .branch-chip, .legacy-scope .tag-chip, .legacy-scope .preset-chip{
+  animation: chip-pop var(--dur-3) var(--ease-spring) backwards;
+}
+@keyframes chip-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ---- empty state: the lone ink stroke breathes ---- */
+ .legacy-scope .empty{
+  animation: fade-rise var(--dur-4) var(--ease-out);
+}
+ .legacy-scope .empty__icon{
+  animation: empty-breathe 5.5s var(--ease-in-out) infinite;
+}
+@keyframes empty-breathe {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateY(-4px) rotate(-1.5deg);
+    opacity: 0.72;
+  }
+}
+@keyframes fade-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* the loading block fades in calmly */
+ .legacy-scope .loading-block{
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+
+/* ---- skeleton shimmer ---- a reusable loading placeholder block that
+   sweeps a faint light across paper, for screens that want it. */
+ .legacy-scope .skeleton{
+  position: relative;
+  overflow: hidden;
+  background: var(--paper-sunken);
+  border-radius: var(--radius-sm);
+}
+ .legacy-scope .skeleton::after{
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 253, 247, 0.55),
+    transparent
+  );
+  animation: skeleton-sweep 1.5s var(--ease-in-out) infinite;
+}
+@keyframes skeleton-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+/* a paper-slip-shaped skeleton card (mirrors .slip) */
+ .legacy-scope .skel-card{
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 18px 18px 16px;
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-slip);
+  animation: card-rise var(--dur-4) var(--ease-out) both;
+}
+ .legacy-scope .skel-card__row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 3px;
+}
+ .legacy-scope .skel-card__foot{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+ .legacy-scope .slip-grid > .skel-card:nth-child(1){
+  animation-delay: 0.02s;
+}
+ .legacy-scope .slip-grid > .skel-card:nth-child(2){
+  animation-delay: 0.07s;
+}
+ .legacy-scope .slip-grid > .skel-card:nth-child(3){
+  animation-delay: 0.12s;
+}
+ .legacy-scope .slip-grid > .skel-card:nth-child(4){
+  animation-delay: 0.17s;
+}
+ .legacy-scope .slip-grid > .skel-card:nth-child(5){
+  animation-delay: 0.22s;
+}
+ .legacy-scope .slip-grid > .skel-card:nth-child(n + 6){
+  animation-delay: 0.27s;
+}
+
+/* ---- spinner arc: trace a dispersing ink arc as the wheel turns ---- */
+ .legacy-scope .spinner__arc{
+  stroke-dasharray: 34;
+  animation: arc-trace 1.15s var(--ease-in-out) infinite;
+}
+@keyframes arc-trace {
+  0% {
+    stroke-dashoffset: 18;
+    opacity: 0.7;
+  }
+  50% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 18;
+    opacity: 0.7;
+  }
+}
+
+/* ---- banners ease in above their content (they appear asynchronously,
+   e.g. an error or the browser-preview note, so they earn their own entrance.
+   Structural chrome like the toolbar/composer/editor-bar is intentionally
+   NOT animated here — the panel + screen entrance already carries it, and
+   double-animating nested chrome reads as fussy.) ---- */
+ .legacy-scope .banner{
+  animation: banner-in var(--dur-3) var(--ease-out);
+}
+@keyframes banner-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* the banner's left rule wipes down */
+ .legacy-scope .banner::before{
+  transform-origin: top;
+  animation: rule-wipe var(--dur-4) var(--ease-out) both;
+}
+@keyframes rule-wipe {
+  0% {
+    transform: scaleY(0);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+/* ---- seal: a faint settle when it first stamps onto paper ---- */
+ .legacy-scope .seal{
+  animation: seal-set var(--dur-4) var(--ease-spring) both;
+}
+@keyframes seal-set {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) rotate(-6deg);
+  }
+  70% {
+    transform: scale(1.04) rotate(1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* ---- icon buttons (refresh etc.): the glyph turns gently on hover, and
+   spins a full, satisfying turn on press ---- */
+ .legacy-scope .btn--icon svg{
+  transition: transform var(--dur-4) var(--ease-brush);
+}
+ .legacy-scope .btn--icon:hover svg{
+  transform: rotate(30deg);
+}
+ .legacy-scope .btn--icon:active svg{
+  transform: rotate(360deg);
+  transition: transform 0.5s var(--ease-out);
+}
+
+/* ---- segmented control: the active pill settles with a spring ---- */
+ .legacy-scope .seg__btn{
+  transition: background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+ .legacy-scope .seg__btn:active{
+  transform: scale(0.94);
+}
+ .legacy-scope .seg__btn.is-active{
+  animation: seg-pop var(--dur-3) var(--ease-spring);
+}
+@keyframes seg-pop {
+  0% {
+    transform: scale(0.92);
+  }
+  60% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ---- toast: enter from below, leave by lifting + fading ----
+   (Toast.tsx adds .is-leaving for the exit window before unmount.) */
+ .legacy-scope .toast{
+  animation: toast-in var(--dur-3) var(--ease-spring);
+}
+ .legacy-scope .toast.is-leaving{
+  animation: toast-out var(--dur-3) var(--ease-out) forwards;
+}
+@keyframes toast-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+}
+ .legacy-scope .toast svg{
+  animation: toast-mark var(--dur-4) var(--ease-spring) both;
+  animation-delay: 0.06s;
+}
+@keyframes toast-mark {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* ---- modal: spring the sheet up; the backdrop dims behind it ---- */
+ .legacy-scope .modal{
+  animation: modal-in var(--dur-4) var(--ease-spring);
+}
+/* close: the backdrop clears and the sheet settles back down + away */
+ .legacy-scope .modal-backdrop.is-closing{
+  animation: fade-out var(--dur-2) var(--ease-out) forwards;
+}
+ .legacy-scope .modal.is-closing{
+  animation: modal-out var(--dur-2) var(--ease-out) forwards;
+}
+@keyframes fade-out {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes modal-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+ .legacy-scope .modal__seal .seal{
+  animation: modal-seal var(--dur-5) var(--ease-spring) both;
+  animation-delay: 0.06s;
+}
+@keyframes modal-seal {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) rotate(-12deg);
+  }
+  65% {
+    transform: scale(1.08) rotate(3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* ---- drawer: already slides in; add a hairline settle to its rows ---- */
+ .legacy-scope .drawer__body > .field, .legacy-scope .drawer__body > .field-row, .legacy-scope .drawer__body > .drawer__section-label{
+  animation: fade-rise var(--dur-3) var(--ease-out) both;
+}
+ .legacy-scope .drawer__body > :nth-child(2){
+  animation-delay: 0.03s;
+}
+ .legacy-scope .drawer__body > :nth-child(3){
+  animation-delay: 0.06s;
+}
+ .legacy-scope .drawer__body > :nth-child(4){
+  animation-delay: 0.09s;
+}
+ .legacy-scope .drawer__body > :nth-child(5){
+  animation-delay: 0.12s;
+}
+ .legacy-scope .drawer__body > :nth-child(n + 6){
+  animation-delay: 0.15s;
+}
+
+/* ---- title bar: the brand mark + health pill settle in on launch ---- */
+ .legacy-scope .titlebar__brand{
+  animation: fade-rise var(--dur-5) var(--ease-out) both;
+}
+ .legacy-scope .titlebar__health{
+  animation: fade-rise var(--dur-5) var(--ease-out) both;
+  animation-delay: 0.08s;
+}
+/* the health dot eases between states; the "ok" ring gives one confirming
+   pulse when the core connects. */
+ .legacy-scope .health-dot{
+  transition: background var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .health-dot--ok{
+  animation: health-ok 0.6s var(--ease-out);
+}
+@keyframes health-ok {
+  0% {
+    box-shadow: 0 0 0 0 rgba(91, 140, 90, 0.4);
+  }
+  60% {
+    box-shadow: 0 0 0 7px rgba(91, 140, 90, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 3px rgba(91, 140, 90, 0.16);
+  }
+}
+
+/* ---- window controls: the close glyph leans in on hover ---- */
+ .legacy-scope .win-btn svg{
+  transition: transform var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .win-btn:active svg{
+  transform: scale(0.86);
+}
+ .legacy-scope .win-btn--close:hover svg{
+  transform: scale(1.12) rotate(90deg);
+}
+
+/* ---- editor: the manuscript sheet eases up when a file opens ---- */
+ .legacy-scope .editor__sheet{
+  animation: sheet-in var(--dur-5) var(--ease-out);
+}
+@keyframes sheet-in {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+/* the unsaved ink mark pulses to draw a gentle eye */
+ .legacy-scope .editor__status .ink-mark{
+  animation: ink-pulse 1.8s var(--ease-in-out) infinite;
+}
+
+/* ---- diff view: lines wash in additively when a diff loads ---- */
+ .legacy-scope .diffview__body .diffline{
+  animation: diff-wash var(--dur-2) var(--ease-out) both;
+}
+@keyframes diff-wash {
+  0% {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+ .legacy-scope .diffview__body .diffline:nth-child(1){
+  animation-delay: 0.01s;
+}
+ .legacy-scope .diffview__body .diffline:nth-child(2){
+  animation-delay: 0.03s;
+}
+ .legacy-scope .diffview__body .diffline:nth-child(3){
+  animation-delay: 0.05s;
+}
+ .legacy-scope .diffview__body .diffline:nth-child(4){
+  animation-delay: 0.07s;
+}
+ .legacy-scope .diffview__body .diffline:nth-child(5){
+  animation-delay: 0.09s;
+}
+ .legacy-scope .diffview__body .diffline:nth-child(n + 6){
+  animation-delay: 0.1s;
+}
+
+/* ---- transcript messages cascade in below the live feed ---- */
+ .legacy-scope .studio__messages .msg{
+  animation: fade-rise var(--dur-3) var(--ease-out) both;
+}
+ .legacy-scope .studio__messages .msg:nth-child(1){
+  animation-delay: 0.02s;
+}
+ .legacy-scope .studio__messages .msg:nth-child(2){
+  animation-delay: 0.05s;
+}
+ .legacy-scope .studio__messages .msg:nth-child(3){
+  animation-delay: 0.08s;
+}
+ .legacy-scope .studio__messages .msg:nth-child(4){
+  animation-delay: 0.11s;
+}
+ .legacy-scope .studio__messages .msg:nth-child(n + 5){
+  animation-delay: 0.14s;
+}
+
+/* ---- test-result box eases in when a probe returns ---- */
+ .legacy-scope .test-result{
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+
+/* ---- a tiny, tasteful hover on chips/badges for life ---- */
+ .legacy-scope .chip, .legacy-scope .badge{
+  transition: transform var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .slip:hover .chip--accent, .legacy-scope .tool-card:hover .chip--jade{
+  transform: translateY(-1px);
+}
+
+/* importance dots fill left-to-right with a faint settle */
+ .legacy-scope .dots__dot{
+  transition: background var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-spring);
+}
+ .legacy-scope .slip:hover .dots__dot.is-on{
+  transform: scale(1.18);
+}
+
+/* ============================================================
+   策划 — Planning / story-bible stage
+   构思 (concept) → 与 AI 探讨 (discuss) → 立稿 (generate the bible)
+   ============================================================ */
+ .legacy-scope .planning{
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  padding: 24px 26px 40px;
+}
+
+/* the active-model toolbar gains a quick jump link to 供应商 */
+ .legacy-scope .plan-toolbar__link{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 4px;
+  padding: 3px 11px;
+  font-size: 11.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-faint);
+  transition: background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .plan-toolbar__link:hover{
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .plan-toolbar__link svg{
+  opacity: 0.85;
+}
+/* push the jump link to the far end of the toolbar row */
+ .legacy-scope .toolbar.plan-toolbar .plan-toolbar__link{
+  margin-left: auto;
+}
+
+/* a polished callout — icon disc + title/text stack + a clear action button,
+   gracefully wrapping on narrow widths. Used for the "no model" nudge. */
+ .legacy-scope .callout{
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .callout__icon{
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .callout__main{
+  flex: 1;
+  min-width: 0;
+}
+ .legacy-scope .callout__title{
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  margin-bottom: 3px;
+}
+ .legacy-scope .callout__text{
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-muted);
+}
+ .legacy-scope .callout__action{
+  flex: none;
+}
+ .legacy-scope .callout--accent{
+  border-color: var(--cinnabar-wash-2);
+  background: linear-gradient(180deg, var(--paper-raised), var(--cinnabar-wash));
+}
+
+/* the planning no-model callout just sets its margin in the page flow */
+ .legacy-scope .plan-provider-hint{
+  margin: 0 0 6px;
+}
+
+/* a single movement of the page (one of the three parts) */
+ .legacy-scope .plan-block{
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+ .legacy-scope .plan-block__head{
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+/* the movement mark: a cinnabar disc carrying the part icon + a small numbered
+   wax-seal badge, so the three steps read as an ordered progression */
+ .legacy-scope .plan-block__mark{
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .plan-block__step{
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  font-family: var(--serif);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fdf3ee;
+  background: radial-gradient(
+    circle at 36% 30%,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35),
+    0 1px 3px rgba(151, 41, 30, 0.3);
+}
+ .legacy-scope .plan-block__titles{
+  flex: 1;
+  min-width: 0;
+  padding-top: 1px;
+}
+ .legacy-scope .plan-block__title{
+  font-size: 18px;
+  letter-spacing: 0.07em;
+  color: var(--ink);
+  padding-left: 0.07em;
+}
+ .legacy-scope .plan-block__sub{
+  margin-top: 4px;
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink-muted);
+  max-width: 64ch;
+}
+ .legacy-scope .plan-block__action{
+  flex: none;
+  align-self: flex-start;
+}
+
+/* ---- 1) 构思 ---- */
+ .legacy-scope .plan-concept{
+  min-height: 104px;
+  max-height: 240px;
+  line-height: 1.85;
+}
+ .legacy-scope .plan-concept__foot{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+ .legacy-scope .plan-concept__foot .field__hint{
+  margin-top: 0;
+}
+/* a small live word-count that flips to a confirming cinnabar state once the
+   concept has substance — a gentle "you're ready" signal */
+ .legacy-scope .plan-concept__count{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 11px;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--ink-ghost);
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 11px;
+  white-space: nowrap;
+  transition: color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .plan-concept__count.is-ready{
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .plan-concept__count svg{
+  opacity: 0.9;
+}
+
+/* ---- 2) 与 AI 探讨 — the reusable Conversation (对话界面) ---- */
+ .legacy-scope .conv{
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--paper-panel), var(--paper-raised));
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  overflow: hidden;
+}
+ .legacy-scope .conv__thread{
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 18px 16px;
+  min-height: 168px;
+  max-height: 460px;
+  overflow-y: auto;
+  /* a faint warm pooling at the top of the well, like light on paper */
+  background: radial-gradient(
+    120% 60% at 50% 0%,
+    rgba(120, 96, 64, 0.04),
+    transparent 60%
+  );
+}
+
+/* the calm opening greeting before any turn — a faint brush flourish sweeps
+   the corner, a seal-disc holds the compass, then suggestion chips invite a
+   first message */
+ .legacy-scope .conv__greeting{
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  padding: 14px 10px 10px;
+  overflow: hidden;
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .conv__greeting-flourish{
+  position: absolute;
+  top: -14px;
+  right: -28px;
+  width: 180px;
+  height: 92px;
+  opacity: 0.05;
+  transform: rotate(-8deg);
+  color: var(--ink);
+  pointer-events: none;
+}
+ .legacy-scope .conv__greeting-mark{
+  grid-row: 1;
+  grid-column: 1;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .conv__greeting-text{
+  grid-row: 1;
+  grid-column: 2;
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--ink-muted);
+  align-self: center;
+}
+/* quick-start suggestion chips under the greeting */
+ .legacy-scope .conv__suggests{
+  grid-row: 2;
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+ .legacy-scope .conv-suggest{
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 13px;
+  font-size: 12.5px;
+  font-family: var(--serif);
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  box-shadow: var(--shadow-inset);
+  transition: background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+  animation: chip-pop var(--dur-3) var(--ease-spring) backwards;
+}
+ .legacy-scope .conv-suggest:nth-child(2){
+  animation-delay: 0.05s;
+}
+ .legacy-scope .conv-suggest:nth-child(3){
+  animation-delay: 0.1s;
+}
+ .legacy-scope .conv-suggest:hover:not(:disabled){
+  border-color: var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  transform: translateY(-1px);
+}
+ .legacy-scope .conv-suggest:active:not(:disabled){
+  transform: translateY(0);
+}
+ .legacy-scope .conv-suggest:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* a single chat bubble — user right, AI left, serif body. Each rises in from
+   its own side so the back-and-forth reads directionally. */
+ .legacy-scope .conv-bubble{
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 82%;
+}
+ .legacy-scope .conv-bubble--user{
+  align-self: flex-end;
+  align-items: flex-end;
+  animation: conv-bubble-r var(--dur-3) var(--ease-out) both;
+}
+ .legacy-scope .conv-bubble--assistant{
+  align-self: flex-start;
+  align-items: flex-start;
+  animation: conv-bubble-l var(--dur-3) var(--ease-out) both;
+}
+@keyframes conv-bubble-l {
+  0% {
+    opacity: 0;
+    transform: translate(-8px, 6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+}
+@keyframes conv-bubble-r {
+  0% {
+    opacity: 0;
+    transform: translate(8px, 6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+}
+ .legacy-scope .conv-bubble__who{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+}
+ .legacy-scope .conv-bubble__who svg{
+  opacity: 0.75;
+}
+ .legacy-scope .conv-bubble__text{
+  font-family: var(--serif);
+  font-size: 14.5px;
+  line-height: 1.92;
+  color: var(--ink);
+  padding: 11px 15px;
+  border-radius: var(--radius-lg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .conv-bubble--assistant .conv-bubble__text{
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-top-left-radius: var(--radius-sm);
+}
+ .legacy-scope .conv-bubble--user .conv-bubble__text{
+  background: linear-gradient(
+    180deg,
+    var(--cinnabar-wash-2),
+    var(--cinnabar-wash)
+  );
+  border: 1px solid var(--cinnabar-wash-2);
+  border-top-right-radius: var(--radius-sm);
+}
+
+/* the "对方正在输入" indicator */
+ .legacy-scope .conv-bubble--typing .conv-bubble__text{
+  display: none;
+}
+ .legacy-scope .conv-typing{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 13px 16px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  border-top-left-radius: var(--radius-sm);
+  box-shadow: var(--shadow-inset);
+}
+ .legacy-scope .conv-typing__dot{
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  opacity: 0.4;
+  animation: conv-typing 1.2s ease-in-out infinite;
+}
+ .legacy-scope .conv-typing__dot:nth-child(2){
+  animation-delay: 0.18s;
+}
+ .legacy-scope .conv-typing__dot:nth-child(3){
+  animation-delay: 0.36s;
+}
+@keyframes conv-typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 0.95;
+    transform: translateY(-3px);
+  }
+}
+
+/* the chat composer at the foot of the thread */
+ .legacy-scope .conv__composer{
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, rgba(231, 223, 205, 0.24), transparent);
+}
+ .legacy-scope .conv__input{
+  flex: 1;
+  min-height: 44px;
+  max-height: 160px;
+  line-height: 1.7;
+}
+ .legacy-scope .conv__send{
+  flex: none;
+  height: 40px;
+  padding: 0 20px;
+  font-family: var(--serif);
+  letter-spacing: 0.08em;
+}
+ .legacy-scope .conv__hint{
+  margin: 0;
+  padding: 2px 14px 11px;
+}
+ .legacy-scope .conv__hint .kbd{
+  margin: 0 1px;
+}
+
+/* ---- 3) 立稿 / 生成设定 ---- */
+ .legacy-scope .plan-gate{
+  margin: 0;
+}
+ .legacy-scope .plan-actions{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: 14px;
+}
+ .legacy-scope .plan-action-card{
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  text-align: left;
+  padding: 17px 17px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  overflow: hidden;
+  transition: transform var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+/* the cinnabar binding seam wells up on hover — matching every other card */
+ .legacy-scope .plan-action-card::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(
+    180deg,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  opacity: 0;
+  transform: scaleY(0.4);
+  transform-origin: center;
+  transition: opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .plan-action-card:hover:not(:disabled){
+  transform: translateY(-3px);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-raised), var(--shadow-inset);
+}
+ .legacy-scope .plan-action-card:hover:not(:disabled)::before{
+  opacity: 0.85;
+  transform: scaleY(1);
+}
+ .legacy-scope .plan-action-card:active:not(:disabled){
+  transform: translateY(-1px);
+}
+ .legacy-scope .plan-action-card:disabled{
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* the card currently running/last-run keeps a persistent seam + warm wash */
+ .legacy-scope .plan-action-card.is-current{
+  border-color: var(--cinnabar-wash-2);
+  background: linear-gradient(180deg, var(--paper-raised), var(--cinnabar-wash));
+  box-shadow: 0 0 0 1px var(--cinnabar-wash-2), var(--shadow-raised);
+}
+ .legacy-scope .plan-action-card.is-current::before{
+  opacity: 0.9;
+  transform: scaleY(1);
+}
+ .legacy-scope .plan-action-card__mark{
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+  margin-bottom: 2px;
+  transition: transform var(--dur-3) var(--ease-brush);
+}
+ .legacy-scope .plan-action-card:hover:not(:disabled) .plan-action-card__mark{
+  transform: rotate(-7deg) scale(1.06);
+}
+ .legacy-scope .plan-action-card.is-current .plan-action-card__mark{
+  color: #fdf3ee;
+  background: radial-gradient(
+    circle at 36% 30%,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  border-color: var(--cinnabar-deep);
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35),
+    0 1px 4px rgba(151, 41, 30, 0.24);
+}
+ .legacy-scope .plan-action-card__label{
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  transition: color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .plan-action-card:hover:not(:disabled) .plan-action-card__label{
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .plan-action-card__blurb{
+  font-family: var(--serif);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink-faint);
+}
+/* a faint "where this lands" footer line so users know the destination before
+   running — reinforces that output flows into the 设定/人物/伏笔 screens */
+ .legacy-scope .plan-action-card__to{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  padding-top: 10px;
+  width: 100%;
+  border-top: 1px dashed var(--line);
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-ghost);
+}
+ .legacy-scope .plan-action-card__to svg{
+  opacity: 0.7;
+  flex: none;
+}
+ .legacy-scope .plan-action-card.is-current .plan-action-card__to{
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .plan-action-card.is-current .plan-action-card__to svg{
+  opacity: 0.9;
+}
+
+/* the live run feed / result for a guided action */
+ .legacy-scope .plan-run{
+  margin-top: 6px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--paper-panel), var(--paper-raised));
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+/* the run uses the shared section-label look; the close button sits at the end */
+ .legacy-scope .plan-run__label{
+  margin: 2px 0 14px;
+}
+ .legacy-scope .plan-run__close{
+  margin-left: auto;
+}
+ .legacy-scope .plan-run__banner{
+  margin: 0 0 12px;
+}
+
+/* the "done" row with the jump-to-screen link */
+ .legacy-scope .plan-run__done{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 11px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: var(--cinnabar-wash);
+  border: 1px solid var(--cinnabar-wash-2);
+}
+ .legacy-scope .plan-run__done-mark{
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  flex: none;
+  color: var(--cinnabar);
+  background: var(--paper-raised);
+  border: 1px solid var(--cinnabar-wash-2);
+}
+ .legacy-scope .plan-run__done-text{
+  font-family: var(--serif);
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+ .legacy-scope .plan-run__jump{
+  margin-left: auto;
+}
+ .legacy-scope .plan-run__notice{
+  margin: 4px auto 0;
+}
+
+/* the calm warming state before the first model step lands */
+ .legacy-scope .plan-run__warming{
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 8px 12px;
+}
+ .legacy-scope .plan-run__warming-orb{
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+ .legacy-scope .plan-run__warming-orb .spinner{
+  position: relative;
+  z-index: 1;
+}
+ .legacy-scope .plan-run__warming-text{
+  font-family: var(--serif);
+  font-size: 13.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+
+/* stagger the action cards' entrance for a gentle cascade. `backwards`
+   (not `both`) so the persisted end-frame doesn't lock `transform` and block
+   the hover-lift — same handling as .slip / .prov-card card-rise above. */
+ .legacy-scope .plan-action-card{
+  animation: card-rise var(--dur-4) var(--ease-out) backwards;
+}
+ .legacy-scope .plan-action-card:nth-child(1){
+  animation-delay: 0.02s;
+}
+ .legacy-scope .plan-action-card:nth-child(2){
+  animation-delay: 0.06s;
+}
+ .legacy-scope .plan-action-card:nth-child(3){
+  animation-delay: 0.1s;
+}
+ .legacy-scope .plan-action-card:nth-child(4){
+  animation-delay: 0.14s;
+}
+
+/* keep the page comfortable on narrow widths */
+@media (max-width: 720px) {
+   .legacy-scope .conv-bubble{
+    max-width: 92%;
+  }
+   .legacy-scope .conv__composer{
+    flex-direction: column;
+    align-items: stretch;
+  }
+   .legacy-scope .conv__send{
+    width: 100%;
+    justify-content: center;
+  }
+   .legacy-scope .plan-concept__foot{
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+  }
+   .legacy-scope .callout{
+    flex-wrap: wrap;
+  }
+   .legacy-scope .callout__main{
+    flex-basis: calc(100% - 56px);
+  }
+   .legacy-scope .callout__action{
+    width: 100%;
+    justify-content: center;
+  }
+   .legacy-scope .workstatus{
+    flex-wrap: wrap;
+  }
+   .legacy-scope .workstatus__meta{
+    margin-left: 0;
+  }
+}
+
+/* ============================================================
+   智能体控制台 — Agent Console
+   工作流程 (workflow) · 工作状态 (work status) · 模型推理 (reasoning)
+   · 工具调用 (tool calls). Shared by the 创作 + 策划 live feeds.
+   ============================================================ */
+
+/* the console groups the workflow tracker + the live status strip above a run */
+ .legacy-scope .agent-console{
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 15px 17px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-panel));
+  box-shadow: var(--shadow-slip), var(--shadow-inset);
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+
+/* ---- 工作流程 — stage tracker ---- */
+ .legacy-scope .workflow{
+  display: flex;
+  align-items: flex-start;
+  list-style: none;
+  margin: 0;
+  padding: 2px 4px 0;
+}
+ .legacy-scope .wf-stage{
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* the connector line reaching back to the previous node's centre */
+ .legacy-scope .wf-stage__line{
+  position: absolute;
+  top: 13px;
+  right: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--line-strong);
+  transition: background var(--dur-4) var(--ease-out);
+}
+ .legacy-scope .wf-stage__line.is-filled{
+  background: linear-gradient(90deg, var(--cinnabar-deep), var(--cinnabar));
+}
+ .legacy-scope .wf-stage__node{
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-faint);
+  box-shadow: var(--shadow-inset);
+  transition: background var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out), color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .wf-stage__num{
+  font-family: var(--serif);
+  font-size: 12px;
+  font-weight: 600;
+}
+ .legacy-scope .wf-stage__label{
+  font-family: var(--serif);
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  padding-left: 0.08em;
+  transition: color var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .wf-stage.is-done .wf-stage__node{
+  background: radial-gradient(
+    circle at 36% 30%,
+    var(--cinnabar-bright),
+    var(--cinnabar-deep)
+  );
+  border-color: var(--cinnabar-deep);
+  color: #fdf3ee;
+}
+ .legacy-scope .wf-stage.is-done .wf-stage__label{
+  color: var(--ink-soft);
+}
+ .legacy-scope .wf-stage.is-active .wf-stage__node{
+  border-color: var(--cinnabar);
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  box-shadow: 0 0 0 4px var(--cinnabar-wash);
+}
+ .legacy-scope .wf-stage.is-active .wf-stage__label{
+  color: var(--cinnabar-deep);
+  font-weight: 600;
+}
+ .legacy-scope .wf-stage__pulse{
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  animation: node-pulse 1.5s ease-in-out infinite;
+}
+ .legacy-scope .wf-stage.is-warn .wf-stage__node{
+  border-color: var(--cinnabar);
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+}
+ .legacy-scope .wf-stage.is-warn .wf-stage__label{
+  color: var(--cinnabar-deep);
+}
+
+/* ---- 工作状态 — the live status strip ---- */
+ .legacy-scope .workstatus{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-panel);
+  box-shadow: var(--shadow-inset);
+  transition: border-color var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .workstatus.is-live{
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .workstatus__orb{
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 999px;
+  color: var(--ink-faint);
+  background: var(--paper-sunken);
+  border: 1px solid var(--line-strong);
+}
+ .legacy-scope .workstatus__ring{
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  opacity: 0.4;
+  animation: ws-ring 1.7s var(--ease-out) infinite;
+  pointer-events: none;
+}
+@keyframes ws-ring {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+}
+ .legacy-scope .workstatus__label{
+  font-family: var(--serif);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  padding-left: 0.06em;
+}
+ .legacy-scope .workstatus__note{
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--paper-sunken);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+ .legacy-scope .workstatus__meta{
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+ .legacy-scope .workstatus__stat{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+}
+ .legacy-scope .workstatus__stat b{
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+ .legacy-scope .workstatus__stat svg{
+  opacity: 0.7;
+}
+/* phase-tinted orb tones */
+ .legacy-scope .workstatus.is-warm .workstatus__orb, .legacy-scope .workstatus.is-reason .workstatus__orb{
+  color: var(--dai);
+  background: rgba(75, 93, 87, 0.1);
+  border-color: rgba(75, 93, 87, 0.28);
+}
+ .legacy-scope .workstatus.is-tool .workstatus__orb{
+  color: var(--cinnabar);
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+}
+ .legacy-scope .workstatus.is-done .workstatus__orb{
+  color: #3f5a3f;
+  background: rgba(63, 90, 63, 0.1);
+  border-color: rgba(63, 90, 63, 0.3);
+}
+ .legacy-scope .workstatus.is-warn .workstatus__orb{
+  color: var(--cinnabar-deep);
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+}
+
+/* ---- 模型推理 — reasoning block ---- */
+ .legacy-scope .reasoning{
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+ .legacy-scope .reasoning__tag{
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-family: var(--sans);
+  letter-spacing: 0.06em;
+  color: var(--dai);
+  background: rgba(75, 93, 87, 0.08);
+  border: 1px solid rgba(75, 93, 87, 0.22);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+ .legacy-scope .reasoning__tag svg{
+  opacity: 0.8;
+}
+ .legacy-scope .reasoning__text{
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+ .legacy-scope .reasoning__text--muted{
+  color: var(--ink-faint);
+}
+ .legacy-scope .reasoning__more{
+  display: inline-block;
+  margin-left: 8px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--cinnabar-deep);
+  letter-spacing: 0.04em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .reasoning__more:hover{
+  color: var(--cinnabar);
+}
+
+/* ---- 工具调用 — expandable tool-call card ---- */
+ .legacy-scope .toolcall{
+  border: 1px solid var(--cinnabar-wash-2);
+  border-radius: var(--radius);
+  background: var(--cinnabar-wash);
+  overflow: hidden;
+  transition: border-color var(--dur-2) var(--ease-out);
+  animation: fade-rise var(--dur-2) var(--ease-out) backwards;
+}
+ .legacy-scope .toolcall.is-open{
+  border-color: var(--cinnabar);
+}
+ .legacy-scope .toolcall__head{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 11px 6px 6px;
+  border: none;
+  background: transparent;
+  color: var(--cinnabar-deep);
+  transition: background var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .toolcall__head:not(:disabled):hover{
+  background: var(--cinnabar-wash-2);
+}
+ .legacy-scope .toolcall__head:disabled{
+  cursor: default;
+}
+ .legacy-scope .toolcall__glyph{
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--cinnabar);
+  color: #fdf3ee;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 208, 0.35);
+}
+ .legacy-scope .toolcall__verb{
+  font-family: var(--serif);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  flex: none;
+}
+ .legacy-scope .toolcall__name{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  flex: none;
+}
+ .legacy-scope .toolcall__preview{
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--cinnabar-deep);
+  opacity: 0.82;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 6px;
+  border-left: 1px solid var(--cinnabar-wash-2);
+}
+ .legacy-scope .toolcall__chevron{
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--cinnabar);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .toolcall.is-open .toolcall__chevron{
+  transform: rotate(180deg);
+}
+ .legacy-scope .toolcall__args{
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px dashed var(--cinnabar-wash-2);
+  background: var(--paper-raised);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+  user-select: text;
+  animation: fade-in var(--dur-2) var(--ease-out);
+}
+
+/* narrow widths: let the workflow labels shrink before the strip wraps */
+@media (max-width: 560px) {
+   .legacy-scope .wf-stage__label{
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+}
+
+/* ---- 探讨 — the dedicated conversation screen fills its panel; the thread
+   scrolls internally rather than the whole page. ---- */
+ .legacy-scope .chat-screen{
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+ .legacy-scope .chat-screen .callout{
+  flex: none;
+}
+ .legacy-scope .chat-screen .conv{
+  flex: 1;
+  min-height: 0;
+}
+ .legacy-scope .chat-screen .conv__thread{
+  flex: 1;
+  max-height: none;
+}
+
+/* ---- 会话 — session library cards ---- */
+ .legacy-scope .session-slip__meta{
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+ .legacy-scope .session-slip__time{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+}
+ .legacy-scope .session-slip__time svg{
+  opacity: 0.7;
+}
+ .legacy-scope .session-slip__foot{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 11px;
+}
+ .legacy-scope .session-slip__resume{
+  flex: 1;
+}
+
+/* ---- delete affordances (memory cards / checkpoint rows) ---- */
+ .legacy-scope .slip__meta-end{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+ .legacy-scope .slip__del{
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-faint);
+  transition: background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
+}
+ .legacy-scope .slip__del:hover{
+  background: var(--cinnabar-wash);
+  border-color: var(--cinnabar-wash-2);
+  color: var(--cinnabar-deep);
+}
+ .legacy-scope .cp__actions{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* the "continuing this session" hint atop the Studio composer */
+ .legacy-scope .studio__continuing{
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--cinnabar-wash-2);
+  background: var(--cinnabar-wash);
+  color: var(--cinnabar-deep);
+  font-size: 12.5px;
+  font-family: var(--serif);
+  animation: fade-rise var(--dur-3) var(--ease-out);
+}
+ .legacy-scope .studio__continuing svg{
+  flex: none;
+  opacity: 0.85;
+}
+ .legacy-scope .studio__continuing-text{
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}

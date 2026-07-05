@@ -1,0 +1,510 @@
+/* ============================================================
+   墨 · 创作 v3 — App Shell (垂直侧栏架构)
+   Grid: [64px sidebar] [1fr content]
+   No horizontal tab bar — all navigation in left spine
+   ============================================================ */
+
+@import "./theme.css";
+
+/* ── 整体壳 ── */
+.app-shell {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: var(--titlebar-h) 1fr;
+  grid-template-columns: var(--nav-w) 1fr;
+  grid-template-areas:
+    "titlebar titlebar"
+    "nav      content";
+  overflow: hidden;
+}
+
+/* ── TitleBar ── */
+.titlebar {
+  grid-area: titlebar;
+  display: flex;
+  align-items: center;
+  padding: 0 12px 0 0;
+  background: var(--paper-hi);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+  z-index: 50;
+}
+
+/* left section — aligns with nav width */
+.titlebar__brand {
+  width: var(--nav-w);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border-right: 1px solid var(--line);
+}
+
+.titlebar__logo {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--cn);
+  letter-spacing: 0.08em;
+}
+
+.titlebar__drag {
+  flex: 1;
+  height: 100%;
+  cursor: move;
+  display: flex;
+  align-items: center;
+  padding-left: 16px;
+}
+
+.titlebar__title {
+  font-family: var(--serif);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: var(--ink-4);
+}
+
+.titlebar__status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-ghost);
+}
+
+.titlebar__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-ghost);
+}
+.titlebar__dot--ok    { background: #5a9060; }
+.titlebar__dot--error { background: var(--cn); }
+.titlebar__dot--check { background: var(--gold); animation: pulse 2s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.titlebar__controls {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.titlebar__btn {
+  width: 34px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-4);
+  font-size: 13px;
+}
+.titlebar__btn:hover {
+  background: rgba(33, 32, 27, 0.07);
+  color: var(--ink);
+}
+.titlebar__btn--close:hover {
+  background: var(--cn);
+  color: #fff;
+}
+
+/* ── 垂直书脊导航 ── */
+.nav-spine {
+  grid-area: nav;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-lo);
+  border-right: 1px solid var(--line);
+  box-shadow: var(--shadow-side);
+  z-index: 40;
+  overflow: hidden;
+  padding: 8px 0 4px;
+}
+
+/* each nav item is a "book spine" */
+.nav-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 0 9px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition:
+    background var(--e-out) var(--dur-2),
+    color      var(--e-out) var(--dur-2),
+    border-color var(--e-out) var(--dur-2);
+}
+
+.nav-item:hover {
+  background: rgba(33, 32, 27, 0.05);
+  color: var(--ink);
+}
+
+.nav-item.is-active {
+  background: var(--cn-wash);
+  color: var(--cn);
+  border-left-color: var(--cn);
+}
+
+/* gold shimmer on active hover */
+.nav-item.is-active:hover {
+  background: var(--cn-wash-2);
+}
+
+.nav-item__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  transition: transform var(--e-quint) var(--dur-2);
+}
+
+.nav-item.is-active .nav-item__icon {
+  transform: scale(1.08);
+}
+
+.nav-item__label {
+  font-family: var(--serif);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  /* vertical writing for book-spine feel */
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+/* groups divider */
+.nav-spine__divider {
+  height: 1px;
+  background: var(--line);
+  margin: 6px 10px;
+  flex-shrink: 0;
+}
+
+/* bottom aux buttons (settings, sessions) */
+.nav-spine__bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+
+.nav-aux {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--ink-ghost);
+  cursor: pointer;
+  transition: color var(--e-out) var(--dur-2), background var(--e-out) var(--dur-2);
+}
+
+.nav-aux:hover {
+  color: var(--ink-3);
+  background: rgba(33, 32, 27, 0.05);
+}
+
+.nav-aux__label {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+/* ── 主内容区 ── */
+.work-area {
+  grid-area: content;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  position: relative;
+}
+
+/* ── 屏幕入场动画 ── */
+@keyframes screenEnter {
+  from { opacity: 0; transform: translateX(6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.work-area > * {
+  animation: screenEnter var(--dur-3) var(--e-quint);
+}
+
+/* ── Toast ── */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  left: calc(var(--nav-w) + 16px);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--ink);
+  color: var(--paper-hi);
+  border-radius: var(--r);
+  font-size: 13px;
+  font-family: var(--sans);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+  max-width: 360px;
+  animation: toastIn var(--dur-3) var(--e-quint);
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.toast--ok  { background: var(--ink); }
+.toast--err { background: var(--cn-deep); }
+
+/* ── Drawer overlay ── */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(33, 32, 27, 0.35);
+  z-index: 200;
+  animation: fadeIn var(--dur-2) var(--e-out);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: var(--drawer-w);
+  height: 100%;
+  background: var(--paper-hi);
+  box-shadow: var(--shadow-pop);
+  z-index: 201;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: drawerIn var(--dur-4) var(--e-quint);
+}
+
+@keyframes drawerIn {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+.drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.drawer__title {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.drawer__close {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-sm);
+  color: var(--ink-3);
+}
+.drawer__close:hover {
+  background: var(--cn-wash);
+  color: var(--cn);
+}
+
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(33, 32, 27, 0.4);
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  animation: fadeIn var(--dur-2) var(--e-out);
+}
+
+.modal {
+  background: var(--paper-hi);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  padding: 28px 32px;
+  max-width: 480px;
+  width: calc(100% - 48px);
+  animation: modalIn var(--dur-3) var(--e-quint);
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.94) translateY(-8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ── Common button styles ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--r-sm);
+  font-size: 13.5px;
+  font-family: var(--sans);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn--primary {
+  background: var(--cn);
+  color: #fff;
+}
+.btn--primary:hover { background: var(--cn-hi); }
+.btn--primary:active { background: var(--cn-lo); transform: scale(0.98); }
+
+.btn--ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--line-strong);
+}
+.btn--ghost:hover {
+  background: rgba(33, 32, 27, 0.05);
+  color: var(--ink);
+  border-color: var(--ink-4);
+}
+
+.btn--danger {
+  background: var(--cn-wash);
+  color: var(--cn);
+  border: 1px solid rgba(180, 48, 34, 0.2);
+}
+.btn--danger:hover {
+  background: var(--cn-wash-2);
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn--sm {
+  padding: 5px 10px;
+  font-size: 12.5px;
+}
+
+/* ── Spinner ── */
+.spinner {
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--cn);
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 全局表单组件基础样式 ──────────────────────────────────────── */
+/* .input / .textarea 在 work-screens 里广泛使用，需在设计系统里定义 */
+
+.input,
+.textarea,
+.select {
+  display: block;
+  width: 100%;
+  background: var(--paper-hi);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink);
+  outline: none;
+  resize: vertical;
+  transition:
+    border-color var(--e-out) var(--dur-2),
+    background   var(--e-out) var(--dur-2),
+    box-shadow   var(--e-out) var(--dur-2);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--ink-ghost);
+}
+
+.input:hover,
+.textarea:hover {
+  border-color: var(--ink-4);
+}
+
+.input:focus,
+.textarea:focus {
+  border-color: var(--cn);
+  background: var(--paper-light);
+  box-shadow: 0 0 0 3px var(--cn-wash);
+}
+
+.textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+/* Label + input grouping */
+.input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input-field__label {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+
