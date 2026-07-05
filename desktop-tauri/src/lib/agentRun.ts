@@ -141,6 +141,14 @@ export const SIMULATE_STAGES: WorkflowStageDef[] = [
   { key: "final", label: "成卦" },
 ];
 
+/** Stages for an IDE agent run: 解析 → 运思 → 落笔 → 完成. */
+export const IDE_STAGES: WorkflowStageDef[] = [
+  { key: "intent", label: "解析" },
+  { key: "reason", label: "运思" },
+  { key: "tool", label: "落笔" },
+  { key: "final", label: "完成" },
+];
+
 export type WorkflowState = "idle" | "running" | "done" | "stopped" | "error";
 
 /** Map a phase to the active stage index + the tracker's overall state. */

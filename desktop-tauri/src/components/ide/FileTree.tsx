@@ -1,14 +1,15 @@
 // FileTree — workspace directory explorer for the IDE screen.
-// Lists files and directories recursively; emits onOpen when a file is clicked.
+// P1: right-click on any file shows a context menu with rename / delete.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeTool } from "../../lib/core";
-import { IconChevron } from "../icons";
+import { IconChevron, IconTrash, IconPencil } from "../icons";
 import { Spinner } from "../Spinner";
+import { useToast } from "../Toast";
 
 export interface FileEntry {
   name: string;
-  path: string; // relative to workspace root
+  path: string;
   isDir: boolean;
 }
 
@@ -22,7 +23,16 @@ interface DirNode {
 interface FileTreeProps {
   onOpen: (path: string) => void;
   activeFile: string | null;
-  refreshKey?: number; // increment to force re-fetch root
+  refreshKey?: number;
+  /** Called when a file is deleted or renamed so the parent can close stale tabs. */
+  onFileDeleted?: (path: string) => void;
+  onFileRenamed?: (oldPath: string, newPath: string) => void;
+}
+
+interface CtxMenu {
+  entry: FileEntry;
+  x: number;
+  y: number;
 }
 
 const TEXT_EXT = /\.(md|markdown|txt|text|json|yml|yaml|toml|csv)$/i;
@@ -43,10 +53,16 @@ async function fetchDir(path: string): Promise<FileEntry[]> {
     });
 }
 
-export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreeProps) {
+export default function FileTree({
+  onOpen, activeFile, refreshKey, onFileDeleted, onFileRenamed,
+}: FileTreeProps) {
+  const toast = useToast();
   const [root, setRoot] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [dirs, setDirs] = useState<Record<string, DirNode>>({});
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const [refreshInternal, setRefreshInternal] = useState(0);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const loadRoot = useCallback(async () => {
     setLoading(true);
@@ -60,7 +76,19 @@ export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreePro
 
   useEffect(() => {
     loadRoot();
-  }, [loadRoot, refreshKey]);
+  }, [loadRoot, refreshKey, refreshInternal]);
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [ctxMenu]);
 
   const toggleDir = useCallback(async (entry: FileEntry) => {
     setDirs((prev) => {
@@ -68,18 +96,14 @@ export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreePro
       if (node) {
         return { ...prev, [entry.path]: { ...node, open: !node.open } };
       }
-      // First open: start loading
       return {
         ...prev,
         [entry.path]: { path: entry.path, entries: [], open: true, loading: true },
       };
     });
-
-    // Fetch if not already loaded
     setDirs((prev) => {
       const node = prev[entry.path];
       if (node && node.entries.length === 0 && node.loading) {
-        // Async fetch outside of setter
         fetchDir(entry.path).then((entries) => {
           setDirs((p) => ({
             ...p,
@@ -91,12 +115,51 @@ export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreePro
     });
   }, []);
 
+  const openCtxMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ entry, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleRename = useCallback(async () => {
+    if (!ctxMenu) return;
+    const { entry } = ctxMenu;
+    setCtxMenu(null);
+    const newName = window.prompt("重命名为：", entry.name);
+    if (!newName?.trim() || newName.trim() === entry.name) return;
+    const dir = entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "";
+    const newPath = dir ? `${dir}/${newName.trim()}` : newName.trim();
+    try {
+      // Read → Write new → Delete old
+      const res = await invokeTool<{ content: string }>("read_file", { path: entry.path });
+      const content = res.ok ? (res.data?.content ?? "") : "";
+      await invokeTool("write_file", { path: newPath, content });
+      await invokeTool("delete_file", { path: entry.path });
+      onFileRenamed?.(entry.path, newPath);
+      setRefreshInternal((k) => k + 1);
+      toast.ok(`已重命名为 ${newName.trim()}`);
+    } catch {
+      toast.err("重命名失败");
+    }
+  }, [ctxMenu, onFileRenamed, toast]);
+
+  const handleDelete = useCallback(async () => {
+    if (!ctxMenu) return;
+    const { entry } = ctxMenu;
+    setCtxMenu(null);
+    if (!window.confirm(`确认删除「${entry.name}」？此操作不可撤销。`)) return;
+    try {
+      await invokeTool("delete_file", { path: entry.path });
+      onFileDeleted?.(entry.path);
+      setRefreshInternal((k) => k + 1);
+      toast.ok(`已删除 ${entry.name}`);
+    } catch {
+      toast.err("删除失败");
+    }
+  }, [ctxMenu, onFileDeleted, toast]);
+
   if (loading) {
-    return (
-      <div className="filetree__loading">
-        <Spinner size={16} />
-      </div>
-    );
+    return <div className="filetree__loading"><Spinner size={16} /></div>;
   }
 
   if (root.length === 0) {
@@ -133,7 +196,6 @@ export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreePro
         );
       }
 
-      // File — only show text files
       if (!TEXT_EXT.test(entry.name)) return null;
 
       return (
@@ -142,6 +204,7 @@ export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreePro
           className={`filetree__item filetree__item--file${activeFile === entry.path ? " filetree__item--active" : ""}`}
           style={{ paddingLeft: `${26 + depth * 14}px` }}
           onClick={() => onOpen(entry.path)}
+          onContextMenu={(e) => openCtxMenu(e, entry)}
           title={entry.path}
         >
           <span className="filetree__dot" />
@@ -151,5 +214,28 @@ export default function FileTree({ onOpen, activeFile, refreshKey }: FileTreePro
     });
   }
 
-  return <div className="filetree">{renderEntries(root, 0)}</div>;
+  return (
+    <>
+      <div className="filetree">{renderEntries(root, 0)}</div>
+
+      {/* 右键上下文菜单 */}
+      {ctxMenu && (
+        <div
+          ref={menuRef}
+          className="filetree__ctx-menu"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          role="menu"
+        >
+          <button className="filetree__ctx-item" onClick={handleRename} role="menuitem">
+            <IconPencil size={13} />
+            重命名
+          </button>
+          <button className="filetree__ctx-item filetree__ctx-item--danger" onClick={handleDelete} role="menuitem">
+            <IconTrash size={13} />
+            删除文件
+          </button>
+        </div>
+      )}
+    </>
+  );
 }

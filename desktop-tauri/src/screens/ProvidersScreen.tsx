@@ -54,7 +54,6 @@ import {
   type ProviderToolMode,
   type ProviderSettings,
 } from "../lib/providers";
-import "../styles/providers.css";
 
 // ---- the editable form shape (max_tokens kept as text for a clean input) ----
 interface ProviderForm {

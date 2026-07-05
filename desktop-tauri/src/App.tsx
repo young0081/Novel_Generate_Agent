@@ -91,7 +91,7 @@ export default function App() {
                 initialSessionId={resumeSessionId ?? undefined}
               />
             )}
-            {mode === "ide"      && <IdeWork />}
+            {mode === "ide"      && <IdeWork onSettingsOpen={() => setShowSettings(true)} />}
             {mode === "revision" && <RevisionWork />}
             {mode === "knowledge"&& <KnowledgeWork />}
           </main>

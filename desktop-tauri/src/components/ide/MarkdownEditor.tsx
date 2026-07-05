@@ -5,15 +5,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { search, searchKeymap } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
 import { invokeTool } from "../../lib/core";
 import { Spinner } from "../Spinner";
 
 interface MarkdownEditorProps {
-  filePath: string;           // workspace-relative path
+  filePath: string;
   onSave?: (path: string) => void;
   onWordCount?: (n: number) => void;
   onContentChange?: (content: string) => void;
+  /** Bump to reload from disk without remounting (preserves cursor). */
+  externalRevision?: number;
+  /** Called once the EditorView is ready; use it to wire up insert-at-cursor. */
+  onViewReady?: (view: EditorView) => void;
+  /** Called when the view is about to be destroyed. */
+  onViewDestroy?: () => void;
+  /** Called whenever the cursor position changes. */
+  onCursorChange?: (line: number, col: number) => void;
 }
 
 // Water-ink CodeMirror theme
@@ -51,7 +60,10 @@ const inkTheme = EditorView.theme({
   ".cm-placeholder": { color: "#b0a090" },
 }, { dark: false });
 
-export default function MarkdownEditor({ filePath, onSave, onWordCount, onContentChange }: MarkdownEditorProps) {
+export default function MarkdownEditor({
+  filePath, onSave, onWordCount, onContentChange,
+  externalRevision, onViewReady, onViewDestroy, onCursorChange,
+}: MarkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -115,30 +127,73 @@ export default function MarkdownEditor({ filePath, onSave, onWordCount, onConten
         extensions: [
           history(),
           markdown(),
-          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          search({ top: false }),
+          keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
           EditorView.lineWrapping,
           placeholder("在此输入章节内容…"),
           inkTheme,
           EditorView.updateListener.of((update) => {
-            if (!update.docChanged) return;
-            const newContent = update.state.doc.toString();
-            const nc = newContent.replace(/\s/g, "").length;
-            onWordCount?.(nc);
-            onContentChange?.(newContent);
-            scheduleSave(newContent);
+            if (update.docChanged) {
+              const newContent = update.state.doc.toString();
+              const nc = newContent.replace(/\s/g, "").length;
+              onWordCount?.(nc);
+              onContentChange?.(newContent);
+              scheduleSave(newContent);
+            }
+            // Cursor position (line/col) reporting
+            if (update.selectionSet || update.docChanged) {
+              const sel = update.state.selection.main;
+              const line = update.state.doc.lineAt(sel.head);
+              onCursorChange?.(line.number, sel.head - line.from + 1);
+            }
           }),
         ],
       });
 
       const view = new EditorView({ state, parent: containerRef.current });
       viewRef.current = view;
+      onViewReady?.(view);
     })();
 
     return () => {
       cancelled = true;
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      onViewDestroy?.();
     };
   }, [filePath, onWordCount, scheduleSave]);
+
+  // External file change (e.g. agent wrote to disk) — reload without recreating the view.
+  // We compare the incoming content against the current doc; if identical we skip the
+  // dispatch so the cursor is not disturbed for no reason.
+  useEffect(() => {
+    if (externalRevision === undefined || externalRevision === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await invokeTool<{ content: string }>("read_file", { path: filePath });
+        if (cancelled || !viewRef.current) return;
+        const newContent =
+          res.ok
+            ? (res.data?.content ?? (typeof res.data === "string" ? res.data : ""))
+            : "";
+        const current = viewRef.current.state.doc.toString();
+        if (newContent === current) return; // nothing changed
+        const { from } = viewRef.current.state.selection.main;
+        const safeFrom = Math.min(from, newContent.length);
+        viewRef.current.dispatch({
+          changes: { from: 0, to: current.length, insert: newContent },
+          selection: { anchor: safeFrom },
+        });
+        const nc = newContent.replace(/\s/g, "").length;
+        onWordCount?.(nc);
+        onContentChange?.(newContent);
+      } catch {
+        // silent — the file may have just been deleted; do nothing
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalRevision]);
 
   // Ctrl+S manual save
   useEffect(() => {

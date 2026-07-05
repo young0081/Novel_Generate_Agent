@@ -36,7 +36,7 @@ export default function Panel({
         </div>
         {actions ? <div className="panel__actions">{actions}</div> : null}
       </header>
-      {toolbar}
+      {toolbar && <div className="panel__toolbar">{toolbar}</div>}
       <div className="panel__body">{children}</div>
     </section>
   );

@@ -66,6 +66,39 @@
   color: var(--ink-4);
 }
 
+/* 当前作品名（TitleBar 中间区） */
+.titlebar__work {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.titlebar__sep {
+  color: var(--ink-ghost);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.titlebar__work-name {
+  font-family: var(--serif);
+  font-size: 12px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar__status-text {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  white-space: nowrap;
+}
+
 .titlebar__status {
   display: flex;
   align-items: center;
@@ -126,8 +159,20 @@
   box-shadow: var(--shadow-side);
   z-index: 40;
   overflow: hidden;
-  padding: 8px 0 4px;
+  padding: 6px 0 0;
 }
+
+/* ── 可滚动的导航项区域 ────────────────────────────────────────
+   flex: 1 + min-height: 0 让它在小窗口时能真正收缩并滚动，
+   而不是把内容撑出去被 overflow:hidden 裁掉。              */
+.nav-spine__items {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none; /* 隐藏滚动条，保持书脊简洁 */
+}
+.nav-spine__items::-webkit-scrollbar { display: none; }
 
 /* each nav item is a "book spine" */
 .nav-item {
@@ -136,14 +181,15 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   width: 100%;
-  padding: 10px 0 9px;
+  padding: 8px 0 7px;
   border: none;
   background: transparent;
   color: var(--ink-3);
   cursor: pointer;
   border-left: 2px solid transparent;
+  flex-shrink: 0;
   transition:
     background var(--e-out) var(--dur-2),
     color      var(--e-out) var(--dur-2),
@@ -161,32 +207,26 @@
   border-left-color: var(--cn);
 }
 
-/* gold shimmer on active hover */
-.nav-item.is-active:hover {
-  background: var(--cn-wash-2);
-}
+.nav-item.is-active:hover { background: var(--cn-wash-2); }
 
 .nav-item__icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: var(--r-sm);
   transition: transform var(--e-quint) var(--dur-2);
 }
 
-.nav-item.is-active .nav-item__icon {
-  transform: scale(1.08);
-}
+.nav-item.is-active .nav-item__icon { transform: scale(1.08); }
 
 .nav-item__label {
   font-family: var(--serif);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.04em;
   line-height: 1.2;
-  /* vertical writing for book-spine feel */
   writing-mode: vertical-rl;
   text-orientation: mixed;
 }
@@ -195,18 +235,19 @@
 .nav-spine__divider {
   height: 1px;
   background: var(--line);
-  margin: 6px 10px;
+  margin: 4px 10px;
   flex-shrink: 0;
 }
 
-/* bottom aux buttons (settings, sessions) */
+/* ── 底部辅助按钮区 ────────────────────────────────────────────
+   flex-shrink: 0 确保即使导航项很多，底部区域也不会被压缩；
+   不再用 margin-top: auto（已由 flex:1 的 items 区顶替）。  */
 .nav-spine__bottom {
-  margin-top: auto;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  padding-bottom: 4px;
   border-top: 1px solid var(--line);
-  padding-top: 4px;
+  padding: 3px 0 4px;
 }
 
 .nav-aux {
@@ -216,17 +257,25 @@
   justify-content: center;
   gap: 3px;
   width: 100%;
-  padding: 9px 0 8px;
+  padding: 7px 0 6px;
   border: none;
   background: transparent;
   color: var(--ink-ghost);
   cursor: pointer;
+  flex-shrink: 0;
   transition: color var(--e-out) var(--dur-2), background var(--e-out) var(--dur-2);
 }
 
 .nav-aux:hover {
   color: var(--ink-3);
   background: rgba(33, 32, 27, 0.05);
+}
+
+/* 设置按钮用朱砂红突出 */
+.nav-aux--settings { color: var(--ink-3); }
+.nav-aux--settings:hover {
+  color: var(--cn);
+  background: var(--cn-wash);
 }
 
 .nav-aux__label {
@@ -508,3 +557,328 @@
   letter-spacing: 0.04em;
 }
 
+
+/* ============================================================
+   ModelSelector — 快速模型切换下拉组件
+   ============================================================ */
+
+.model-sel {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* ── 触发按钮 ── */
+.model-sel__trigger {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--paper-lo);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--ink-3);
+  font-family: var(--sans);
+  transition:
+    background var(--e-out) var(--dur-2),
+    border-color var(--e-out) var(--dur-2),
+    color var(--e-out) var(--dur-2);
+  white-space: nowrap;
+}
+
+.model-sel--md .model-sel__trigger {
+  font-size: 12.5px;
+  padding: 5px 9px;
+}
+.model-sel--sm .model-sel__trigger {
+  font-size: 11.5px;
+  padding: 3px 7px;
+}
+
+.model-sel__trigger:hover:not(:disabled) {
+  background: var(--cn-wash);
+  border-color: var(--cn-wash-2);
+  color: var(--ink);
+}
+.model-sel--open .model-sel__trigger {
+  background: var(--cn-wash);
+  border-color: var(--cn);
+  color: var(--ink);
+}
+.model-sel__trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.model-sel__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.model-sel--sm .model-sel__label { max-width: 120px; }
+
+.model-sel__caret {
+  flex-shrink: 0;
+  color: var(--ink-ghost);
+  transition: transform var(--e-out) var(--dur-2);
+}
+.model-sel__caret--up { transform: rotate(180deg); }
+
+/* ── 空状态按钮 ── */
+.model-sel--empty.model-sel--md {
+  font-size: 12.5px;
+}
+.model-sel--empty.model-sel--sm {
+  font-size: 11.5px;
+}
+.model-sel--empty .model-sel__trigger,
+.model-sel.model-sel--empty {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--cn-wash);
+  border: 1px dashed var(--cn-wash-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--cn);
+  padding: 4px 9px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  transition: background var(--e-out) var(--dur-2);
+}
+.model-sel.model-sel--empty:hover {
+  background: var(--cn-wash-2);
+}
+
+/* ── 下拉浮层 ── */
+.model-sel__dropdown {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--paper-hi);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-pop);
+  z-index: 500;
+  padding: 6px 0;
+  animation: model-sel-in var(--dur-3) var(--e-quint) both;
+}
+@keyframes model-sel-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.model-sel__group {
+  margin-bottom: 2px;
+}
+
+.model-sel__group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink-ghost);
+  text-transform: uppercase;
+  padding: 6px 12px 3px;
+  font-family: var(--sans);
+}
+
+.model-sel__option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-family: var(--sans);
+  color: var(--ink-2);
+  text-align: left;
+  transition:
+    background var(--e-out) var(--dur-1),
+    color var(--e-out) var(--dur-1);
+}
+.model-sel__option:hover {
+  background: var(--cn-wash);
+  color: var(--ink);
+}
+.model-sel__option--active {
+  color: var(--cn);
+  font-weight: 500;
+}
+
+.model-sel__option-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-ghost);
+  flex-shrink: 0;
+}
+.model-sel__option--active .model-sel__option-dot {
+  background: var(--cn);
+}
+
+.model-sel__option-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-sel__active-mark {
+  color: var(--cn);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.model-sel__settings-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+  margin-top: 4px;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  font-family: var(--sans);
+  color: var(--ink-ghost);
+  text-align: left;
+  transition: color var(--e-out) var(--dur-1);
+}
+.model-sel__settings-link:hover { color: var(--cn); }
+
+/* ============================================================
+   Panel — global (非 legacy-scoped) 全局面板样式
+   供 ProvidersScreen / ToolsScreen 等通过 Panel 组件使用
+   ============================================================ */
+
+.panel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.panel__flourish {
+  position: absolute;
+  top: 6px;
+  right: -22px;
+  width: 220px;
+  height: 100px;
+  opacity: 0.045;
+  transform: rotate(-7deg);
+  transform-origin: top right;
+  pointer-events: none;
+  color: var(--ink);
+  z-index: 0;
+}
+
+.panel__header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.panel__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.panel__title {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 2px;
+}
+
+.panel__title-cn {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.06em;
+}
+
+.panel__title .en {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.28em;
+  color: var(--ink-ghost);
+  text-transform: uppercase;
+  transform: translateY(-2px);
+}
+
+.panel__title-stroke {
+  position: absolute;
+  left: 1px;
+  bottom: -7px;
+  width: 56px;
+  height: 5px;
+  color: var(--cn);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.panel__subtitle {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  font-family: var(--sans);
+}
+
+.panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.panel__body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  padding: 16px 24px 20px;
+}
+
+/* toolbar slot — 在 panel__header 和 panel__body 之间，与 body 对齐缩进 */
+.panel__toolbar {
+  padding: 12px 24px 0;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-hi);
+}
+
+/* scroll-area: 面板内可滚动的内容容器 */
+.scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}

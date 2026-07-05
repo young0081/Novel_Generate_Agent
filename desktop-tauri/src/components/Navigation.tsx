@@ -1,4 +1,4 @@
-// Navigation — Vertical book-spine sidebar (替代横向 WorkTabs)
+// Navigation — Vertical book-spine sidebar
 // 64px narrow sidebar with icon + vertical text label per mode
 
 import {
@@ -12,7 +12,7 @@ import {
   IconSeed,
   IconRestore,
   IconUser,
-  IconProviders,
+  IconSettings,
 } from "./icons";
 
 type WorkMode =
@@ -57,47 +57,38 @@ export default function Navigation({
 }: NavigationProps) {
   return (
     <nav className="nav-spine">
-      {NAV_ITEMS.map((item) => {
-        const Icon = item.Icon;
-        return (
-          <button
-            key={item.id}
-            className={`nav-item${active === item.id ? " is-active" : ""}`}
-            onClick={() => onSelect(item.id)}
-            title={item.label}
-          >
-            <span className="nav-item__icon">
-              <Icon size={18} />
-            </span>
-            <span className="nav-item__label">{item.label}</span>
-          </button>
-        );
-      })}
+      {/* 可滚动的导航项区域 — 小窗口时在此区域内滚动，底部按钮始终可见 */}
+      <div className="nav-spine__items">
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.Icon;
+          return (
+            <button
+              key={item.id}
+              className={`nav-item${active === item.id ? " is-active" : ""}`}
+              onClick={() => onSelect(item.id)}
+              title={item.label}
+            >
+              <span className="nav-item__icon">
+                <Icon size={18} />
+              </span>
+              <span className="nav-item__label">{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
 
-      {/* Bottom auxiliary buttons */}
+      {/* 底部辅助按钮 — flex-shrink:0，永远贴底 */}
       <div className="nav-spine__bottom">
-        <button
-          className="nav-aux"
-          onClick={onSessions}
-          title="会话历史"
-        >
+        <button className="nav-aux" onClick={onSessions} title="会话历史">
           <IconRestore size={16} />
           <span className="nav-aux__label">会话</span>
         </button>
-        <button
-          className="nav-aux"
-          onClick={onMemory}
-          title="记忆库"
-        >
+        <button className="nav-aux" onClick={onMemory} title="记忆库">
           <IconUser size={16} />
           <span className="nav-aux__label">记忆</span>
         </button>
-        <button
-          className="nav-aux"
-          onClick={onSettings}
-          title="设置"
-        >
-          <IconProviders size={16} />
+        <button className="nav-aux nav-aux--settings" onClick={onSettings} title="设置">
+          <IconSettings size={16} />
           <span className="nav-aux__label">设置</span>
         </button>
       </div>

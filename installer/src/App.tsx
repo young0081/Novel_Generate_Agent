@@ -168,7 +168,7 @@ export default function App() {
         setDir(d.path);
       } catch {
         if (!alive) return;
-        setVersion((p) => p || "0.1.0");
+        setVersion((p) => p || "0.3.0");
         setDetect({ installed: false, path: "", version: null });
       }
     })();

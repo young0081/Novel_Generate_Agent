@@ -384,3 +384,34 @@ export const TitleStroke = (props: SVGProps<SVGSVGElement>) => (
     <path d="M0 4.2c10-1.6 22-2.4 40-2.6 26-.3 52 .4 80 2.1-26 .9-52 1-78 .7C20 6.1 9 5.4 0 4.2Z" />
   </svg>
 );
+
+/** 设置 — a gear / cogwheel, universally recognisable settings affordance */
+export const IconSettings = (p: IconProps) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+  </svg>
+);
+
+/** 停止 — filled square, the universal "stop" affordance */
+export const IconStop = (p: IconProps) => (
+  <svg {...base(p)}>
+    <rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+/** 发送 — a right-pointing arrow-head (send message) */
+export const IconSend = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M22 12 3 4l4 8-4 8 19-8Z" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+/** 运笔模式 — a circling arrow around a brush tip, "agent run" */
+export const IconAgentMode = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M17 6.5a7 7 0 1 0 2.5 5" />
+    <path d="M14.5 5 17 6.5l-1.5 2.5" />
+    <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+  </svg>
+);

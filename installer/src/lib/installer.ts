@@ -30,7 +30,7 @@ function isTauri(): boolean {
 // Fallback values used only for the in-browser dev preview (no Tauri backend).
 const BROWSER_FALLBACK_DIR =
   "C:\\Users\\You\\AppData\\Local\\Programs\\NovelGenerateTeam";
-const BROWSER_FALLBACK_VERSION = "0.1.0";
+const BROWSER_FALLBACK_VERSION = "0.3.0";
 
 export async function detectExisting(): Promise<DetectResult> {
   if (!isTauri()) {

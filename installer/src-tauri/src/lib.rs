@@ -51,7 +51,7 @@ fn output_hidden(program: &str, args: &[&str]) -> std::io::Result<Output> {
 const PAYLOAD: &[u8] = include_bytes!("../payload/NovelGenerateAgent.exe");
 
 const EXE_NAME: &str = "NovelGenerateAgent.exe";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const PUBLISHER: &str = "Novel Generate Agent";
 const DISPLAY_NAME: &str = "Novel Generate Agent (墨·创作)";
 const SHORTCUT_NAME: &str = "墨·创作.lnk";
