@@ -115,7 +115,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             '后端服务器',
             icon: Icons.dns_outlined,
             subtitle:
-                '移动端通过 HTTP 连接到团队跑起来的后端（桌面端 / Next 服务）。'
+                '移动端通过 HTTP 连接到后端服务（桌面端 / Next 服务）。'
                 '在电脑上启动前端后，把这里填成电脑的局域网地址。',
             [
               TextField(
@@ -149,7 +149,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         StaggeredEntrance(
           index: 1,
           child: sectionCard('关于', icon: Icons.info_outline_rounded, const [
-            Text('Novel Generate Team —— 团队协作同人小说 AI 创作平台'),
+            Text('Novel Generate Team —— AI 驱动的小说创作平台'),
             SizedBox(height: 6),
             Text('移动端（Flutter）复用同一个 Rust 核心层。', style: TextStyle(fontSize: 13)),
           ]),

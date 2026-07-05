@@ -2,7 +2,7 @@
   "name": "novel-generate-team-frontend",
   "version": "0.1.0",
   "private": true,
-  "description": "团队协作同人小说 AI 创作平台 —— Next.js 创作前端（通过 Node 桥调用 Rust 核心层）",
+  "description": "AI 驱动的小说创作平台 —— Next.js 创作前端（通过 Node 桥调用 Rust 核心层）",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

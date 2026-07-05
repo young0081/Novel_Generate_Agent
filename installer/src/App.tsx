@@ -265,7 +265,7 @@ function Welcome({
 }) {
   return (
     <section className="panel panel--welcome">
-      <p className="kicker reveal r1">团队协作 · 同人小说 AI 创作工坊</p>
+      <p className="kicker reveal r1">AI 驱动 · 小说创作工坊</p>
       <h1 className="lede reveal r2">
         执笔，<br />自此处<em>落墨</em>。
       </h1>

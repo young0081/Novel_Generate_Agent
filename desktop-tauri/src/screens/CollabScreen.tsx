@@ -1,8 +1,7 @@
-// 协作 / 版本 — async team collaboration via the fiction version-control tools.
+// 协作 / 版本 — version control for fiction writing.
 //
-// A team can point several clients at one shared backend/workspace and work
-// asynchronously: each writer commits snapshots of the manuscript, branches to
-// explore alternate plot lines, compares revisions, and restores when needed.
+// Writers can commit snapshots of the manuscript, create branches to explore
+// alternate plot lines, compare revisions, and restore when needed.
 //
 // Backed by the vcs_* tools through `invokeTool` (core.ts):
 //   vcs_commit / vcs_log / vcs_diff / vcs_branch / vcs_restore
