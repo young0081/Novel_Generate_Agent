@@ -1,5 +1,5 @@
 {
-  "name": "novel-generate-team-frontend",
+  "name": "novel-generate-agent-frontend",
   "version": "0.1.0",
   "private": true,
   "description": "AI 驱动的小说创作平台 —— Next.js 创作前端（通过 Node 桥调用 Rust 核心层）",

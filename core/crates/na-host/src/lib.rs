@@ -1,4 +1,4 @@
-//! `na-host` — the integration layer that fronts the whole Novel Generate Team
+//! `na-host` — the integration layer that fronts the whole Novel Generate Agent
 //! core for the GUI shells.
 //!
 //! It exposes two things:

@@ -1,4 +1,4 @@
-# Novel Generate Team（AI 驱动的小说创作平台）
+# Novel Generate Agent（AI 驱动的小说创作平台）
 
 <div align="center">
 
@@ -247,7 +247,7 @@ cd desktop-tauri
 npm run tauri build -- --bundles nsis
 
 # 2. 构建自定义安装器（单文件 exe）
-cp "target/release/desktop-tauri.exe" "../installer/src-tauri/payload/NovelGenerateTeam.exe"
+cp "target/release/desktop-tauri.exe" "../installer/src-tauri/payload/NovelGenerateAgent.exe"
 cd ../installer
 npm install
 npm run tauri build -- --no-bundle
@@ -269,7 +269,7 @@ flutter build apk --release
 ## 项目目录结构
 
 ```
-Novel_Generate_Team/
+Novel_Generate_Agent/
 ├── core/                     # Rust 核心层（cargo workspace）
 │   ├── Cargo.toml            # workspace 根
 │   ├── crates/
@@ -312,8 +312,8 @@ Novel_Generate_Team/
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/young0081/Novel_Generate_Team.git
-cd Novel_Generate_Team
+git clone https://github.com/young0081/Novel_Generate_Agent.git
+cd Novel_Generate_Agent
 
 # 2. 编译核心层
 cd core
@@ -354,7 +354,7 @@ npm run tauri dev
 
 ## 联系方式
 
-- GitHub Issues: [提交问题](https://github.com/young0081/Novel_Generate_Team/issues)
+- GitHub Issues: [提交问题](https://github.com/young0081/Novel_Generate_Agent/issues)
 - 项目作者: [@young0081](https://github.com/young0081)
 
 ---

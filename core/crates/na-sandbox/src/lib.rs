@@ -1,6 +1,6 @@
 //! `na-sandbox` — isolation, permission policy, and resource budgets.
 //!
-//! This crate is the safety perimeter of the Novel Generate Team core. Before
+//! This crate is the safety perimeter of the Novel Generate Agent core. Before
 //! any tool touches the filesystem, runs a command, or spends machine
 //! resources, it passes through the gates defined here:
 //!

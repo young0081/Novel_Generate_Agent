@@ -59,8 +59,8 @@ export default function Home() {
         <div className="app">
           <aside className="sidebar">
             <div className="brand">
-              Novel Generate Team
-              <span className="sub">团队协作同人小说 · 创作工作台</span>
+              Novel Generate Agent
+              <span className="sub">AI 驱动的小说创作 · 工作台</span>
             </div>
             <nav className="nav">
               {TABS.map((t, i) => (

@@ -149,7 +149,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         StaggeredEntrance(
           index: 1,
           child: sectionCard('关于', icon: Icons.info_outline_rounded, const [
-            Text('Novel Generate Team —— AI 驱动的小说创作平台'),
+            Text('Novel Generate Agent —— AI 驱动的小说创作平台'),
             SizedBox(height: 6),
             Text('移动端（Flutter）复用同一个 Rust 核心层。', style: TextStyle(fontSize: 13)),
           ]),

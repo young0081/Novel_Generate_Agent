@@ -48,15 +48,15 @@ fn output_hidden(program: &str, args: &[&str]) -> std::io::Result<Output> {
 }
 
 /// The entire main app (a single self-contained Tauri exe), embedded.
-const PAYLOAD: &[u8] = include_bytes!("../payload/NovelGenerateTeam.exe");
+const PAYLOAD: &[u8] = include_bytes!("../payload/NovelGenerateAgent.exe");
 
-const EXE_NAME: &str = "NovelGenerateTeam.exe";
+const EXE_NAME: &str = "NovelGenerateAgent.exe";
 const VERSION: &str = "0.1.0";
-const PUBLISHER: &str = "Novel Generate Team";
-const DISPLAY_NAME: &str = "Novel Generate Team (墨·创作)";
+const PUBLISHER: &str = "Novel Generate Agent";
+const DISPLAY_NAME: &str = "Novel Generate Agent (墨·创作)";
 const SHORTCUT_NAME: &str = "墨·创作.lnk";
 const UNINSTALL_KEY: &str =
-    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\NovelGenerateTeam";
+    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\NovelGenerateAgent";
 
 #[derive(Serialize, Clone)]
 struct DetectResult {
@@ -84,7 +84,7 @@ fn local_appdata() -> PathBuf {
 }
 
 fn default_install_dir() -> PathBuf {
-    local_appdata().join("Programs").join("NovelGenerateTeam")
+    local_appdata().join("Programs").join("NovelGenerateAgent")
 }
 
 /// Read a REG_SZ value from the uninstall key, if present.
@@ -574,7 +574,7 @@ fn uninstall_script(dir: &Path, created: &[PathBuf]) -> String {
          \x20 (Join-Path $env:USERPROFILE 'Desktop\\{lnk}')\r\n\
          )\r\n\
          foreach ($t in $targets) {{ Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue }}\r\n\
-         Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\NovelGenerateTeam' -Recurse -Force -ErrorAction SilentlyContinue\r\n\
+         Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\NovelGenerateAgent' -Recurse -Force -ErrorAction SilentlyContinue\r\n\
          $env:NGT_RM = '{dir}'\r\n\
          Start-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-Command','Start-Sleep -Seconds 2; Remove-Item -LiteralPath $env:NGT_RM -Recurse -Force -ErrorAction SilentlyContinue')\r\n",
         proc = EXE_NAME.trim_end_matches(".exe"),
@@ -587,7 +587,7 @@ fn uninstall_script(dir: &Path, created: &[PathBuf]) -> String {
 /// Write a small diagnostic log next to the installed exe.
 fn write_install_log(dir: &Path, updating: bool, report: &ShortcutReport, uninstaller_ok: bool) {
     let mut log = String::new();
-    log.push_str("Novel Generate Team — install log\r\n");
+    log.push_str("Novel Generate Agent — install log\r\n");
     log.push_str(&format!("install dir : {}\r\n", dir.to_string_lossy()));
     log.push_str(&format!("mode        : {}\r\n", if updating { "update" } else { "fresh" }));
     log.push_str(&format!("start-menu  : {:?}\r\n", programs_dir()));
@@ -735,7 +735,7 @@ fn find_install_dir() -> Result<String, String> {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
             let parent_path = parent.to_string_lossy().to_string();
-            // Check if this looks like our install dir (has NovelGenerateTeam.exe)
+            // Check if this looks like our install dir (has NovelGenerateAgent.exe)
             if parent.join(EXE_NAME).exists() {
                 return Ok(parent_path);
             }
@@ -744,7 +744,7 @@ fn find_install_dir() -> Result<String, String> {
 
     // Method 3: Check default installation path
     if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-        let default_path = PathBuf::from(localappdata).join("Programs").join("NovelGenerateTeam");
+        let default_path = PathBuf::from(localappdata).join("Programs").join("NovelGenerateAgent");
         if default_path.exists() && default_path.join(EXE_NAME).exists() {
             return Ok(default_path.to_string_lossy().to_string());
         }

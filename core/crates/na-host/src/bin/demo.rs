@@ -1,4 +1,4 @@
-//! End-to-end, fully-offline demonstration of the Novel Generate Team core
+//! End-to-end, fully-offline demonstration of the Novel Generate Agent core
 //! (Phase-1 base + Phase-2 hardening).
 //!
 //! Driven entirely by scripted mock models, it shows the whole stack working
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let mut root = std::env::temp_dir();
     root.push(format!("novel_demo_{}", na_common::next_id("ws")));
 
-    println!("📚 Novel Generate Team —— 核心层端到端演示（含加固能力）");
+    println!("📚 Novel Generate Agent —— 核心层端到端演示（含加固能力）");
     line();
     println!("工作区: {}", root.display());
 

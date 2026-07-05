@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "NovelGenerateTeam",
+  "productName": "NovelGenerateAgent",
   "version": "0.2.0",
-  "identifier": "com.novelgenerateteam.desktop",
+  "identifier": "com.novelgenerateagent.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

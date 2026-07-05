@@ -17,7 +17,7 @@ export default function TitleBar() {
   return (
     <div className="titlebar">
       <div className="titlebar-drag">
-        <span className="titlebar-title">Novel Generate Team —— 创作工作台</span>
+        <span className="titlebar-title">Novel Generate Agent —— 创作工作台</span>
       </div>
       <div className="titlebar-controls">
         <button className="winbtn" onClick={() => api.minimize()} aria-label="最小化" title="最小化">

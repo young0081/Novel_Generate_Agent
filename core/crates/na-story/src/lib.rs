@@ -1,4 +1,4 @@
-//! `na-story` — story state management and consistency checking for the Novel Generate Team.
+//! `na-story` — story state management and consistency checking for the Novel Generate Agent.
 //!
 //! This crate provides structured state management for long-form fiction writing,
 //! ensuring that the agent maintains consistency of character traits, plot constraints,

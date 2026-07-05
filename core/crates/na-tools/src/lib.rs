@@ -1,4 +1,4 @@
-//! `na-tools` — the tool-execution layer of the Novel Generate Team core.
+//! `na-tools` — the tool-execution layer of the Novel Generate Agent core.
 //!
 //! This crate turns the safety primitives of `na-sandbox` and the durable stores
 //! of `na-memory` into a coherent, model-facing **tool protocol**:

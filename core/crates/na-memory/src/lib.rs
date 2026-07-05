@@ -1,4 +1,4 @@
-//! `na-memory` — durable state for the Novel Generate Team core.
+//! `na-memory` — durable state for the Novel Generate Agent core.
 //!
 //! This crate provides the three "memory" subsystems the agent relies on, all
 //! built on `na-common`'s normalized [`na_common::Result`]/[`na_common::CoreError`]

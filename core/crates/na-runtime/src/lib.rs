@@ -1,4 +1,4 @@
-//! `na-runtime` — the agent runtime layer of the Novel Generate Team core.
+//! `na-runtime` — the agent runtime layer of the Novel Generate Agent core.
 //!
 //! This crate is the brain that turns the tool-execution layer ([`na_tools`]),
 //! the durable stores ([`na_memory`]), and the safety perimeter ([`na_sandbox`])
