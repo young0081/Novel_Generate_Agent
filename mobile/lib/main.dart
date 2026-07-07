@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'motion.dart';
-import 'rpc.dart';
-import 'settings.dart';
+import 'ai_client.dart';
+import 'storage.dart';
 import 'screens/studio_screen.dart';
-import 'screens/files_screen.dart';
+import 'screens/chapters_screen.dart';
 import 'screens/memory_screen.dart';
 import 'screens/checkpoint_screen.dart';
 import 'screens/settings_screen.dart';
@@ -230,7 +230,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final RpcService _rpc = RpcService(Settings.defaultUrl);
+  AiProvider? _provider;
   int _index = 0;
   int _direction = 1;
   bool _loaded = false;
@@ -238,15 +238,14 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    Settings.loadServerUrl().then((url) {
+    LocalStorage.instance.loadProvider().then((p) {
       if (!mounted) return;
-      setState(() { _rpc.baseUrl = url; _loaded = true; });
+      setState(() { _provider = p; _loaded = true; });
     });
   }
 
-  void _onUrlChanged(String url) {
-    setState(() => _rpc.baseUrl = url);
-    Settings.saveServerUrl(url);
+  void _onProviderChanged(AiProvider p) {
+    setState(() => _provider = p);
   }
 
   void _selectTab(int i) {
@@ -254,7 +253,7 @@ class _HomePageState extends State<HomePage> {
     setState(() { _direction = i > _index ? 1 : -1; _index = i; });
   }
 
-  static const _titles = ['创作', '文件', '记忆', '快照', '设置'];
+  static const _titles = ['创作', '章节', '记忆', '快照', '设置'];
 
   @override
   Widget build(BuildContext context) {
@@ -293,11 +292,18 @@ class _HomePageState extends State<HomePage> {
     }
 
     final screens = <Widget>[
-      StudioScreen(rpc: _rpc),
-      FilesScreen(rpc: _rpc),
-      MemoryScreen(rpc: _rpc),
-      CheckpointScreen(rpc: _rpc),
-      SettingsScreen(rpc: _rpc, onChanged: _onUrlChanged),
+      StudioScreen(
+        key: ValueKey(_provider?.apiKey ?? ''),
+        provider: _provider,
+        onGoSettings: () => _selectTab(4),
+      ),
+      const ChaptersScreen(),
+      const MemoryScreen(),
+      const CheckpointScreen(),
+      SettingsScreen(
+        provider: _provider,
+        onProviderChanged: _onProviderChanged,
+      ),
     ];
 
     return Scaffold(
@@ -393,9 +399,9 @@ class _HomePageState extends State<HomePage> {
               label: '创作',
             ),
             NavigationDestination(
-              icon: Icon(Icons.folder_open_outlined),
-              selectedIcon: Icon(Icons.folder_open_rounded),
-              label: '文件',
+              icon: Icon(Icons.article_outlined),
+              selectedIcon: Icon(Icons.article_rounded),
+              label: '章节',
             ),
             NavigationDestination(
               icon: Icon(Icons.psychology_outlined),

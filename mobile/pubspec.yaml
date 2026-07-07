@@ -30,15 +30,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
-  # HTTP client for JSON-RPC calls to the Rust core (via the Next.js /api/rpc bridge).
+  # HTTP — AI API 直连（OpenAI 兼容 / Anthropic）
   http: ^1.2.0
-  # Persist the configured backend server URL on-device.
+  # 本地持久化：API Key、设置、记忆、章节元数据
   shared_preferences: ^2.2.0
+  # 本地文件路径（章节内容、快照存为 JSON 文件）
+  path_provider: ^2.1.2
 
 dev_dependencies:
   flutter_test:

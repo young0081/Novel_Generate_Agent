@@ -1,107 +1,73 @@
+// settings_screen.dart — API 供应商配置（独立版，不需要后端）
 import 'package:flutter/material.dart';
-
+import '../main.dart' show InkPalette;
 import '../motion.dart';
-import '../rpc.dart';
+import '../ai_client.dart';
+import '../storage.dart';
 import '../widgets.dart';
 
 class SettingsScreen extends StatefulWidget {
-  final RpcService rpc;
-  final void Function(String url) onChanged;
-  const SettingsScreen({super.key, required this.rpc, required this.onChanged});
+  final AiProvider? provider;
+  final void Function(AiProvider) onProviderChanged;
+  const SettingsScreen({
+    super.key,
+    required this.provider,
+    required this.onProviderChanged,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  late final TextEditingController _url = TextEditingController(
-    text: widget.rpc.baseUrl,
-  );
-
-  /// null = unknown, true = last test connected, false = last test failed.
-  bool? _connected;
-  bool _busy = false;
+  late AiProvider _draft;
+  bool _showKey = false;
+  bool _testing = false;
+  bool? _testOk;
+  String _testMsg = '';
 
   @override
-  void dispose() {
-    _url.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _draft = widget.provider ?? kProviderPresets.first;
   }
 
-  void _save() {
-    widget.onChanged(_url.text.trim());
-    showSuccessSnack(context, '已保存服务器地址。');
+  void _applyPreset(AiProvider preset) {
+    setState(() {
+      _draft = AiProvider(
+        name: preset.name,
+        protocol: preset.protocol,
+        baseUrl: preset.baseUrl,
+        apiKey: _draft.apiKey, // 保留已填的 key
+        model: preset.model,
+      );
+      _testOk = null;
+    });
   }
 
   Future<void> _testConnection() async {
-    widget.onChanged(_url.text.trim());
-    setState(() {
-      _busy = true;
-      _connected = null;
-    });
+    if (_draft.apiKey.isEmpty) {
+      setState(() { _testOk = false; _testMsg = '请先填写 API Key'; });
+      return;
+    }
+    setState(() { _testing = true; _testOk = null; });
     try {
-      final pong = await widget.rpc.ping();
+      final reply = await AiClient(_draft).testConnection();
       if (!mounted) return;
-      final ok = pong == 'pong';
-      setState(() => _connected = ok);
-      if (ok) {
-        showSuccessSnack(context, '已连接 Rust 核心。');
-      } else {
-        showErrorSnack(context, '收到非预期响应：$pong');
-      }
+      setState(() { _testOk = true; _testMsg = '连接成功，模型回复：$reply'; });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _connected = false);
-      showErrorSnack(context, '连接失败：$e');
+      setState(() { _testOk = false; _testMsg = '连接失败：$e'; });
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _testing = false);
     }
   }
 
-  Widget _statusChip() {
-    final scheme = Theme.of(context).colorScheme;
-    late final IconData icon;
-    late final String text;
-    late final Color color;
-    // A stable key per status so the switcher cross-fades on real changes only.
-    late final String stateKey;
-    if (_busy) {
-      icon = Icons.sync_rounded;
-      text = '正在测试连接…';
-      color = scheme.onSurfaceVariant;
-      stateKey = 'busy';
-    } else if (_connected == true) {
-      icon = Icons.check_circle_rounded;
-      text = '已连接 Rust 核心';
-      color = const Color(0xFF4ED69A);
-      stateKey = 'ok';
-    } else if (_connected == false) {
-      icon = Icons.error_rounded;
-      text = '未连接';
-      color = scheme.error;
-      stateKey = 'fail';
-    } else {
-      icon = Icons.help_outline_rounded;
-      text = '尚未测试连接';
-      color = scheme.onSurfaceVariant;
-      stateKey = 'unknown';
-    }
-    return Padding(
-      padding: const EdgeInsets.only(top: 14),
-      child: CrossFadeSwitcher(
-        child: Row(
-          key: ValueKey<String>(stateKey),
-          children: [
-            // Spin the sync glyph while testing; static otherwise.
-            _busy
-                ? _SpinningIcon(icon: icon, color: color)
-                : Icon(icon, size: 18, color: color),
-            const SizedBox(width: 8),
-            Text(text, style: TextStyle(fontSize: 13, color: color)),
-          ],
-        ),
-      ),
-    );
+  Future<void> _save() async {
+    await LocalStorage.instance.saveProvider(_draft);
+    widget.onProviderChanged(_draft);
+    if (!mounted) return;
+    showSuccessSnack(context, '已保存，模型切换为 ${_draft.model}');
   }
 
   @override
@@ -109,91 +75,206 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // ── 预设快填 ──
         StaggeredEntrance(
           index: 0,
-          child: sectionCard(
-            '后端服务器',
-            icon: Icons.dns_outlined,
-            subtitle:
-                '移动端通过 HTTP 连接到后端服务（桌面端 / Next 服务）。'
-                '在电脑上启动前端后，把这里填成电脑的局域网地址。',
-            [
-              TextField(
-                controller: _url,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  labelText: '服务器地址',
-                  hintText: 'http://192.168.1.10:3000',
-                  prefixIcon: Icon(Icons.link_rounded),
-                ),
+          child: sectionCard('快速填充预设', icon: Icons.bolt_outlined, [
+            Text('选择一个服务商预设后，只需填写你自己的 API Key 即可。',
+              style: TextStyle(fontSize: 12.5, color: InkPalette.ink3, height: 1.5)),
+            const SizedBox(height: 12),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: kProviderPresets.map((p) {
+                  final active = _draft.baseUrl == p.baseUrl;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: GestureDetector(
+                      onTap: () => _applyPreset(p),
+                      child: AnimatedContainer(
+                        duration: Motion.fast,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: active
+                              ? InkPalette.cinnabarWash
+                              : InkPalette.paperLo,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: active ? InkPalette.cinnabar : InkPalette.line,
+                            width: active ? 1.2 : 0.8,
+                          ),
+                        ),
+                        child: Text(p.name,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: active
+                                ? FontWeight.w600 : FontWeight.normal,
+                            color: active
+                                ? InkPalette.cinnabar : InkPalette.ink2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  FilledButton.icon(
-                    onPressed: _busy ? null : _save,
-                    icon: const Icon(Icons.save_rounded),
-                    label: const Text('保存'),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton(
-                    onPressed: _busy ? null : _testConnection,
-                    child: BusyLabel(busy: _busy, label: '测试连接'),
-                  ),
-                ],
-              ),
-              _statusChip(),
-            ],
-          ),
+            ),
+          ]),
         ),
+
+        // ── API Key ──
         StaggeredEntrance(
           index: 1,
+          child: sectionCard('API Key', icon: Icons.key_rounded,
+            subtitle: 'Key 只存在本设备，不经过任何服务器。',
+            [
+              TextField(
+                obscureText: !_showKey,
+                onChanged: (v) => setState(() {
+                  _draft = AiProvider(
+                    name: _draft.name, protocol: _draft.protocol,
+                    baseUrl: _draft.baseUrl, apiKey: v, model: _draft.model,
+                  );
+                }),
+                controller: TextEditingController.fromValue(
+                  TextEditingValue(
+                    text: _draft.apiKey,
+                    selection: TextSelection.collapsed(offset: _draft.apiKey.length),
+                  ),
+                ),
+                decoration: InputDecoration(
+                  labelText: 'API Key',
+                  hintText: 'sk-...',
+                  suffixIcon: IconButton(
+                    icon: Icon(_showKey
+                        ? Icons.visibility_off_rounded
+                        : Icons.visibility_rounded,
+                      size: 20),
+                    onPressed: () => setState(() => _showKey = !_showKey),
+                  ),
+                ),
+              ),
+            ]),
+        ),
+
+        // ── 接入地址 & 模型 ──
+        StaggeredEntrance(
+          index: 2,
+          child: sectionCard('接口设置', icon: Icons.settings_ethernet_rounded, [
+            TextField(
+              onChanged: (v) => setState(() {
+                _draft = AiProvider(
+                  name: _draft.name, protocol: _draft.protocol,
+                  baseUrl: v.trim(), apiKey: _draft.apiKey, model: _draft.model,
+                );
+              }),
+              controller: TextEditingController.fromValue(
+                TextEditingValue(
+                  text: _draft.baseUrl,
+                  selection: TextSelection.collapsed(offset: _draft.baseUrl.length),
+                ),
+              ),
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '接口地址 (Base URL)',
+                hintText: 'https://api.deepseek.com/v1',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              onChanged: (v) => setState(() {
+                _draft = AiProvider(
+                  name: _draft.name, protocol: _draft.protocol,
+                  baseUrl: _draft.baseUrl, apiKey: _draft.apiKey,
+                  model: v.trim(),
+                );
+              }),
+              controller: TextEditingController.fromValue(
+                TextEditingValue(
+                  text: _draft.model,
+                  selection: TextSelection.collapsed(offset: _draft.model.length),
+                ),
+              ),
+              decoration: const InputDecoration(
+                labelText: '模型名称',
+                hintText: 'deepseek-chat',
+              ),
+            ),
+          ]),
+        ),
+
+        // ── 操作按钮 ──
+        StaggeredEntrance(
+          index: 3,
+          child: sectionCard('', [
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.save_rounded, size: 18),
+                    label: const Text('保存配置'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                OutlinedButton(
+                  onPressed: _testing ? null : _testConnection,
+                  child: BusyLabel(busy: _testing, label: '测试连接'),
+                ),
+              ],
+            ),
+            if (_testOk != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: _testOk!
+                      ? const Color(0xFFE8F5EE) : InkPalette.cinnabarWash,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _testOk!
+                        ? const Color(0xFF4CAF50) : InkPalette.cinnabar,
+                    width: 0.8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      _testOk!
+                          ? Icons.check_circle_rounded : Icons.error_rounded,
+                      size: 16,
+                      color: _testOk!
+                          ? const Color(0xFF2E7D32) : InkPalette.cinnabar,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(_testMsg,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: _testOk!
+                            ? const Color(0xFF2E7D32) : InkPalette.cinnabar,
+                      ))),
+                  ],
+                ),
+              ),
+            ],
+          ]),
+        ),
+
+        // ── 关于 ──
+        StaggeredEntrance(
+          index: 4,
           child: sectionCard('关于', icon: Icons.info_outline_rounded, const [
-            Text('Novel Generate Agent —— AI 驱动的小说创作平台'),
-            SizedBox(height: 6),
-            Text('移动端（Flutter）复用同一个 Rust 核心层。', style: TextStyle(fontSize: 13)),
+            Text('墨·创作 — AI 驱动的小说创作平台',
+              style: TextStyle(fontSize: 13.5, color: InkPalette.ink)),
+            SizedBox(height: 4),
+            Text('移动端（Flutter）· 完全本地运行，无需后端。\n'
+                 '支持 OpenAI / DeepSeek / Kimi / 智谱 / Anthropic / Ollama。',
+              style: TextStyle(fontSize: 12.5, color: InkPalette.ink3, height: 1.5)),
+            SizedBox(height: 8),
+            Text('v0.3.0', style: TextStyle(fontSize: 12, color: InkPalette.inkGhost)),
           ]),
         ),
       ],
     );
-  }
-}
-
-/// A continuously rotating icon used for the "testing connection" status.
-/// Stops at rest under reduced motion.
-class _SpinningIcon extends StatefulWidget {
-  final IconData icon;
-  final Color color;
-
-  const _SpinningIcon({required this.icon, required this.color});
-
-  @override
-  State<_SpinningIcon> createState() => _SpinningIconState();
-}
-
-class _SpinningIconState extends State<_SpinningIcon>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    _controller.repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final glyph = Icon(widget.icon, size: 18, color: widget.color);
-    if (Motion.reduced(context)) return glyph;
-    return RotationTransition(turns: _controller, child: glyph);
   }
 }

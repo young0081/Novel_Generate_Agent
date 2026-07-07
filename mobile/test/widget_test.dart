@@ -1,20 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:novel_mobile/rpc.dart';
 import 'package:novel_mobile/widgets.dart';
 
 void main() {
-  test('RpcException formats as [code] message', () {
-    final e = RpcException(-32601, 'method not found');
-    expect(e.toString(), '[-32601] method not found');
-  });
-
-  test('RpcService stores the configured base url', () {
-    final rpc = RpcService('http://192.168.1.10:3000/');
-    expect(rpc.baseUrl, 'http://192.168.1.10:3000/');
-  });
-
   testWidgets('sectionCard renders its title and children', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
