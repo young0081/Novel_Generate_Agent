@@ -68,6 +68,7 @@ void main() {
         home: Scaffold(body: BusyLabel(busy: false, label: '保存')),
       ),
     );
+    await tester.pumpAndSettle(); // 等待 CrossFadeSwitcher 动画结束
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.text('保存'), findsOneWidget);
   });

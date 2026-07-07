@@ -1,15 +1,41 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'motion.dart';
 import 'rpc.dart';
 import 'settings.dart';
-import 'screens/checkpoint_screen.dart';
+import 'screens/studio_screen.dart';
 import 'screens/files_screen.dart';
 import 'screens/memory_screen.dart';
+import 'screens/checkpoint_screen.dart';
 import 'screens/settings_screen.dart';
-import 'screens/tools_screen.dart';
+
+// ── 水墨国风色板 ────────────────────────────────────────────────
+class InkPalette {
+  InkPalette._();
+  static const paper      = Color(0xFFEDE6D7);
+  static const paperHi    = Color(0xFFF6F0E6);
+  static const paperLo    = Color(0xFFE0D6C1);
+  static const paperEdge  = Color(0xFFCFC1A3);
+  static const ink        = Color(0xFF21201B);
+  static const ink2       = Color(0xFF47433A);
+  static const ink3       = Color(0xFF6C6258);
+  static const ink4       = Color(0xFF968C7A);
+  static const inkGhost   = Color(0xFFB0A490);
+  static const cinnabar   = Color(0xFFB43022);
+  static const cinnabarHi = Color(0xFFC5422D);
+  static const cinnabarWash = Color(0x14B43022);
+  static const teal       = Color(0xFF4E6560);
+  static const gold       = Color(0xFFC4955A);
+  static const line       = Color(0xFFD2C6AF);
+}
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
   runApp(const NovelApp());
 }
 
@@ -19,7 +45,7 @@ class NovelApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Novel Generate Team',
+      title: '墨·创作',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
       home: const HomePage(),
@@ -28,90 +54,166 @@ class NovelApp extends StatelessWidget {
 }
 
 ThemeData _buildTheme() {
-  final scheme = ColorScheme.fromSeed(
-    seedColor: const Color(0xFF7C9CFF),
-    brightness: Brightness.dark,
+  final scheme = ColorScheme(
+    brightness: Brightness.light,
+    primary: InkPalette.cinnabar,
+    onPrimary: InkPalette.paperHi,
+    primaryContainer: const Color(0xFFFFDAD5),
+    onPrimaryContainer: const Color(0xFF410001),
+    secondary: InkPalette.teal,
+    onSecondary: InkPalette.paperHi,
+    secondaryContainer: const Color(0xFFCBE8E2),
+    onSecondaryContainer: const Color(0xFF002021),
+    tertiary: InkPalette.gold,
+    onTertiary: InkPalette.paperHi,
+    tertiaryContainer: const Color(0xFFFFDDB4),
+    onTertiaryContainer: const Color(0xFF271900),
+    error: const Color(0xFFBA1A1A),
+    onError: Colors.white,
+    errorContainer: const Color(0xFFFFDAD6),
+    onErrorContainer: const Color(0xFF410002),
+    surface: InkPalette.paperHi,
+    onSurface: InkPalette.ink,
+    surfaceContainerHighest: InkPalette.paperLo,
+    onSurfaceVariant: InkPalette.ink3,
+    outline: InkPalette.line,
+    outlineVariant: InkPalette.paperEdge,
+    shadow: const Color(0xFF000000),
+    scrim: const Color(0xFF000000),
+    inverseSurface: InkPalette.ink2,
+    onInverseSurface: InkPalette.paperHi,
+    inversePrimary: const Color(0xFFFFB4AB),
+    surfaceTint: InkPalette.cinnabar,
   );
+
   return ThemeData(
     useMaterial3: true,
-    brightness: Brightness.dark,
     colorScheme: scheme,
-    scaffoldBackgroundColor: const Color(0xFF0F1115),
-    // Any pushed route fades + slides through, consistent with in-app motion.
+    scaffoldBackgroundColor: InkPalette.paper,
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
-        TargetPlatform.android: _FadeThroughTransitionsBuilder(),
-        TargetPlatform.iOS: _FadeThroughTransitionsBuilder(),
+        TargetPlatform.android: _InkPageTransitionBuilder(),
+        TargetPlatform.iOS:     _InkPageTransitionBuilder(),
       },
+    ),
+    appBarTheme: AppBarTheme(
+      backgroundColor: InkPalette.paperHi,
+      foregroundColor: InkPalette.ink,
+      elevation: 0,
+      scrolledUnderElevation: 1,
+      shadowColor: InkPalette.line,
+      centerTitle: false,
+      titleTextStyle: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        color: InkPalette.ink,
+        letterSpacing: 0.4,
+      ),
+      systemOverlayStyle: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: InkPalette.paperHi,
+      indicatorColor: InkPalette.cinnabarWash,
+      iconTheme: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) {
+          return const IconThemeData(color: InkPalette.cinnabar, size: 22);
+        }
+        return const IconThemeData(color: InkPalette.ink4, size: 22);
+      }),
+      labelTextStyle: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) {
+          return const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+              color: InkPalette.cinnabar);
+        }
+        return const TextStyle(fontSize: 11, color: InkPalette.ink4);
+      }),
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
     ),
     cardTheme: CardThemeData(
       elevation: 0,
-      color: const Color(0xFF161A21),
+      color: InkPalette.paperHi,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: InkPalette.line, width: 0.8),
       ),
+    ),
+    dividerTheme: const DividerThemeData(
+      color: InkPalette.line, thickness: 0.8, space: 0,
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: const Color(0xFF11151C),
+      fillColor: InkPalette.paperHi,
       isDense: true,
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: InkPalette.line),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: InkPalette.line),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: scheme.primary, width: 1.6),
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: InkPalette.cinnabar, width: 1.6),
       ),
+      labelStyle: const TextStyle(color: InkPalette.ink3, fontSize: 13.5),
+      hintStyle: const TextStyle(color: InkPalette.inkGhost, fontSize: 13.5),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: InkPalette.cinnabar,
+        foregroundColor: InkPalette.paperHi,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        textStyle: const TextStyle(
+          fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 0.3),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        foregroundColor: InkPalette.cinnabar,
+        side: const BorderSide(color: InkPalette.cinnabar),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     ),
-    snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: InkPalette.cinnabar,
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ),
   );
 }
 
-/// Drives [MaterialApp] route transitions through the same fade + lift used by
-/// [FadeThroughPageRoute], so navigation matches the rest of the motion. Snaps
-/// instantly under reduced motion.
-class _FadeThroughTransitionsBuilder extends PageTransitionsBuilder {
-  const _FadeThroughTransitionsBuilder();
+// 水墨淡入过渡动画
+class _InkPageTransitionBuilder extends PageTransitionsBuilder {
+  const _InkPageTransitionBuilder();
 
   @override
   Widget buildTransitions<T>(
-    PageRoute<T> route,
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
+    PageRoute<T> route, BuildContext context,
+    Animation<double> animation, Animation<double> secondaryAnimation,
     Widget child,
   ) {
     if (Motion.reduced(context)) return child;
     final curved = CurvedAnimation(
-      parent: animation,
-      curve: Motion.standard,
-      reverseCurve: Motion.smooth,
+      parent: animation, curve: Motion.standard, reverseCurve: Motion.smooth,
     );
     return FadeTransition(
       opacity: curved,
       child: SlideTransition(
         position: Tween<Offset>(
-          begin: const Offset(0, 0.035),
-          end: Offset.zero,
+          begin: const Offset(0, 0.028), end: Offset.zero,
         ).animate(curved),
         child: child,
       ),
@@ -119,9 +221,10 @@ class _FadeThroughTransitionsBuilder extends PageTransitionsBuilder {
   }
 }
 
+// ── 首页 ─────────────────────────────────────────────────────────
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
-
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -129,8 +232,6 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final RpcService _rpc = RpcService(Settings.defaultUrl);
   int _index = 0;
-  // Direction of the last tab change: +1 = moved right, -1 = moved left.
-  // Drives which way the body slides during the cross-fade.
   int _direction = 1;
   bool _loaded = false;
 
@@ -139,10 +240,7 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     Settings.loadServerUrl().then((url) {
       if (!mounted) return;
-      setState(() {
-        _rpc.baseUrl = url;
-        _loaded = true;
-      });
+      setState(() { _rpc.baseUrl = url; _loaded = true; });
     });
   }
 
@@ -153,83 +251,119 @@ class _HomePageState extends State<HomePage> {
 
   void _selectTab(int i) {
     if (i == _index) return;
-    setState(() {
-      _direction = i > _index ? 1 : -1;
-      _index = i;
-    });
+    setState(() { _direction = i > _index ? 1 : -1; _index = i; });
   }
 
-  static const _titles = ['文件工作台', '记忆库', '检查点', '工具目录', '设置'];
+  static const _titles = ['创作', '文件', '记忆', '快照', '设置'];
 
   @override
   Widget build(BuildContext context) {
     if (!_loaded) {
       return Scaffold(
+        backgroundColor: InkPalette.paper,
         body: Center(
-          child: TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0, end: 1),
-            duration: Motion.dur(context, Motion.slow),
-            curve: Motion.standard,
-            builder: (context, t, child) => Opacity(opacity: t, child: child),
-            child: const Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('正在启动…'),
-              ],
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72, height: 72,
+                decoration: BoxDecoration(
+                  color: InkPalette.cinnabar,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                alignment: Alignment.center,
+                child: const Text('墨',
+                  style: TextStyle(
+                    fontSize: 36, fontWeight: FontWeight.w700,
+                    color: InkPalette.paperHi, letterSpacing: 2,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              const SizedBox(width: 24, height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(InkPalette.cinnabar),
+                ),
+              ),
+            ],
           ),
         ),
       );
     }
 
     final screens = <Widget>[
+      StudioScreen(rpc: _rpc),
       FilesScreen(rpc: _rpc),
       MemoryScreen(rpc: _rpc),
       CheckpointScreen(rpc: _rpc),
-      ToolsScreen(rpc: _rpc),
       SettingsScreen(rpc: _rpc, onChanged: _onUrlChanged),
     ];
 
     return Scaffold(
+      backgroundColor: InkPalette.paper,
       appBar: AppBar(
+        backgroundColor: InkPalette.paperHi,
         title: AnimatedSwitcher(
           duration: Motion.dur(context, Motion.normal),
           switchInCurve: Motion.standard,
           switchOutCurve: Motion.smooth,
-          transitionBuilder: (child, animation) => FadeTransition(
-            opacity: animation,
+          transitionBuilder: (child, anim) => FadeTransition(
+            opacity: anim,
             child: SlideTransition(
               position: Tween<Offset>(
-                begin: const Offset(0, 0.25),
-                end: Offset.zero,
-              ).animate(animation),
+                begin: const Offset(0, 0.25), end: Offset.zero,
+              ).animate(anim),
               child: child,
             ),
           ),
-          child: Text(
-            'Novel Generate Team · ${_titles[_index]}',
+          child: Row(
             key: ValueKey<int>(_index),
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 26, height: 26,
+                decoration: BoxDecoration(
+                  color: InkPalette.cinnabar,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                alignment: Alignment.center,
+                child: const Text('墨',
+                  style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700,
+                    color: InkPalette.paperHi,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '墨·创作  ·  ${_titles[_index]}',
+                style: const TextStyle(
+                  fontSize: 15.5, fontWeight: FontWeight.w600,
+                  color: InkPalette.ink2, letterSpacing: 0.4,
+                ),
+              ),
+            ],
           ),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(0.8),
+          child: Container(height: 0.8, color: InkPalette.line),
         ),
       ),
       body: AnimatedSwitcher(
         duration: Motion.dur(context, Motion.normal),
         switchInCurve: Motion.standard,
         switchOutCurve: Motion.smooth,
-        transitionBuilder: (child, animation) {
-          // The incoming child keys its own slide direction via _direction at
-          // build time; reverse children fade without sliding to avoid clashes.
+        transitionBuilder: (child, anim) {
           final isIncoming = child.key == ValueKey<int>(_index);
-          final dx = isIncoming ? 0.06 * _direction : 0.0;
+          final dx = isIncoming ? 0.05 * _direction : 0.0;
           return FadeTransition(
-            opacity: animation,
+            opacity: anim,
             child: SlideTransition(
               position: Tween<Offset>(
-                begin: Offset(dx, 0),
-                end: Offset.zero,
-              ).animate(animation),
+                begin: Offset(dx, 0), end: Offset.zero,
+              ).animate(anim),
               child: child,
             ),
           );
@@ -238,24 +372,48 @@ class _HomePageState extends State<HomePage> {
           alignment: Alignment.topCenter,
           children: [...previousChildren, ?currentChild],
         ),
-        child: KeyedSubtree(key: ValueKey<int>(_index), child: screens[_index]),
+        child: KeyedSubtree(
+          key: ValueKey<int>(_index), child: screens[_index],
+        ),
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _selectTab,
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.edit_document), label: '文件'),
-          NavigationDestination(icon: Icon(Icons.psychology_alt), label: '记忆'),
-          NavigationDestination(icon: Icon(Icons.save_outlined), label: '快照'),
-          NavigationDestination(
-            icon: Icon(Icons.handyman_outlined),
-            label: '工具',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            label: '设置',
-          ),
-        ],
+      bottomNavigationBar: Container(
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: InkPalette.line, width: 0.8)),
+        ),
+        child: NavigationBar(
+          selectedIndex: _index,
+          onDestinationSelected: _selectTab,
+          animationDuration: Motion.normal,
+          height: 62,
+          backgroundColor: InkPalette.paperHi,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.edit_outlined),
+              selectedIcon: Icon(Icons.edit_rounded),
+              label: '创作',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.folder_open_outlined),
+              selectedIcon: Icon(Icons.folder_open_rounded),
+              label: '文件',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.psychology_outlined),
+              selectedIcon: Icon(Icons.psychology_rounded),
+              label: '记忆',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.bookmark_border_rounded),
+              selectedIcon: Icon(Icons.bookmark_rounded),
+              label: '快照',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings_rounded),
+              label: '设置',
+            ),
+          ],
+        ),
       ),
     );
   }
