@@ -10,6 +10,7 @@ import '../main.dart' show InkPalette;
 import '../motion.dart';
 import '../ai_client.dart';
 import '../storage.dart';
+import '../rich_text.dart';
 
 // ── 消息角色 ──────────────────────────────────────────────────────
 enum _Role { user, assistant }
@@ -890,11 +891,20 @@ class _AssistantBubble extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          SelectableText(text,
-                            style: const TextStyle(
-                              fontSize: 13.5,
-                              color: InkPalette.ink,
-                              height: 1.6)),
+                          // 流式期间用纯文本（保证打字机流畅），
+                          // 完成后切换为富文本渲染（标题/加粗/列表等）
+                          streaming
+                              ? SelectableText(text,
+                                  style: const TextStyle(
+                                    fontSize: 13.5,
+                                    color: InkPalette.ink,
+                                    height: 1.6))
+                              : InkRichText(
+                                  text: text,
+                                  baseStyle: const TextStyle(
+                                    fontSize: 13.5,
+                                    color: InkPalette.ink,
+                                    height: 1.6)),
                           if (streaming)
                             const Padding(
                               padding: EdgeInsets.only(top: 3),
