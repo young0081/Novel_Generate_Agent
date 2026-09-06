@@ -159,6 +159,92 @@ class BusyIcon extends StatelessWidget {
   }
 }
 
+/// Compact selection toolbar shared by local lists that support bulk actions.
+/// The delete callback is intentionally supplied by the owning screen so each
+/// list can keep its storage cascade and confirmation copy explicit.
+class BatchActionsBar extends StatelessWidget {
+  final int selectedCount;
+  final int totalCount;
+  final bool allSelected;
+  final bool busy;
+  final int? progress;
+  final VoidCallback onToggleAll;
+  final VoidCallback onClear;
+  final VoidCallback onDelete;
+
+  const BatchActionsBar({
+    super.key,
+    required this.selectedCount,
+    required this.totalCount,
+    required this.allSelected,
+    required this.busy,
+    required this.onToggleAll,
+    required this.onClear,
+    required this.onDelete,
+    this.progress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '已选 $selectedCount / $totalCount',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: busy ? null : onToggleAll,
+                child: Text(allSelected ? '取消全选' : '全选'),
+              ),
+              TextButton(
+                onPressed: busy || selectedCount == 0 ? null : onClear,
+                child: const Text('清除'),
+              ),
+              TextButton.icon(
+                onPressed: busy || selectedCount == 0 ? null : onDelete,
+                style: TextButton.styleFrom(foregroundColor: scheme.error),
+                icon: const Icon(Icons.delete_outline_rounded, size: 17),
+                label: const Text('删除'),
+              ),
+            ],
+          ),
+          if (busy && progress != null) ...[
+            const SizedBox(height: 3),
+            LinearProgressIndicator(
+              // `progress` counts the selected items, while `totalCount`
+              // describes the whole list. Use the current selection as the
+              // denominator so selecting 2 of 20 still reaches 100%.
+              value: (selectedCount == 0 && totalCount == 0)
+                  ? null
+                  : progress! /
+                        (selectedCount > 0 ? selectedCount : totalCount),
+              minHeight: 3,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// A friendly placeholder for empty lists / before-first-load states.
 ///
 /// Fades + lifts into view on appearance, and the icon breathes gently

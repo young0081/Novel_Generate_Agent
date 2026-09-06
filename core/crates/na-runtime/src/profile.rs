@@ -93,6 +93,149 @@ impl ProjectProfile {
         }
         out
     }
+
+    /// Return the Markdown section that explicitly mentions a chapter number.
+    /// This keeps a long outline's current beats prominent in the model
+    /// context. Headings such as `## 第12章 雨夜`, `## 第十二章 雨夜`, and
+    /// `## Chapter 12` work.
+    pub fn chapter_outline(&self, chapter: u32) -> Option<String> {
+        let outline = self.outline_md.as_deref()?;
+        let lines: Vec<&str> = outline.lines().collect();
+        let mut start = None;
+        let mut heading_level = 0usize;
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            let level = trimmed.chars().take_while(|c| *c == '#').count();
+            if level == 0 || !trimmed[level..].starts_with(' ') {
+                continue;
+            }
+            if heading_contains_chapter(&trimmed[level..], chapter) {
+                start = Some(index);
+                heading_level = level;
+                break;
+            }
+        }
+        let start = start?;
+        let end = lines
+            .iter()
+            .enumerate()
+            .skip(start + 1)
+            .find(|(_, line)| {
+                let trimmed = line.trim_start();
+                let level = trimmed.chars().take_while(|c| *c == '#').count();
+                level > 0 && level <= heading_level && trimmed[level..].starts_with(' ')
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(lines.len());
+        let section = lines[start..end].join("\n").trim().to_string();
+        (!section.is_empty()).then_some(section)
+    }
+}
+
+fn heading_contains_chapter(heading: &str, chapter: u32) -> bool {
+    let mut number = 0u32;
+    let mut in_number = false;
+    for ch in heading.chars() {
+        if ch.is_ascii_digit() {
+            number = number
+                .saturating_mul(10)
+                .saturating_add(ch as u32 - '0' as u32);
+            in_number = true;
+        } else if in_number {
+            if number == chapter {
+                return true;
+            }
+            number = 0;
+            in_number = false;
+        }
+    }
+    if in_number && number == chapter {
+        return true;
+    }
+
+    // Chinese outlines commonly spell chapter numbers as "第一章" or
+    // "第十二章". Restrict this fallback to an explicit chapter marker so a
+    // year or other unrelated numeral in a heading cannot select the section.
+    let chars: Vec<char> = heading.chars().collect();
+    for (index, ch) in chars.iter().enumerate() {
+        if *ch != '第' {
+            continue;
+        }
+        let Some((value, consumed)) = parse_chinese_number(&chars[index + 1..]) else {
+            continue;
+        };
+        let suffix = chars.get(index + 1 + consumed).copied();
+        let valid_suffix = matches!(suffix, Some('章' | '节' | '回') | None)
+            || suffix.is_some_and(|ch| ch.is_whitespace() || ".、:：-".contains(ch));
+        if valid_suffix && value == chapter {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_chinese_number(input: &[char]) -> Option<(u32, usize)> {
+    fn digit(ch: char) -> Option<u32> {
+        Some(match ch {
+            '零' | '〇' => 0,
+            '一' => 1,
+            '二' | '两' => 2,
+            '三' => 3,
+            '四' => 4,
+            '五' => 5,
+            '六' => 6,
+            '七' => 7,
+            '八' => 8,
+            '九' => 9,
+            _ => return None,
+        })
+    }
+
+    fn unit(ch: char) -> Option<u32> {
+        Some(match ch {
+            '十' => 10,
+            '百' => 100,
+            '千' => 1_000,
+            '万' => 10_000,
+            '亿' => 100_000_000,
+            _ => return None,
+        })
+    }
+
+    let mut total = 0u32;
+    let mut section = 0u32;
+    let mut number = 0u32;
+    let mut consumed = 0usize;
+    let mut saw_number = false;
+    for &ch in input {
+        if let Some(value) = digit(ch) {
+            number = number.saturating_mul(10).saturating_add(value);
+            saw_number = true;
+            consumed += 1;
+            continue;
+        }
+        let Some(scale) = unit(ch) else {
+            break;
+        };
+        saw_number = true;
+        consumed += 1;
+        if scale < 10_000 {
+            let value = if number == 0 { 1 } else { number };
+            section = section.saturating_add(value.saturating_mul(scale));
+        } else {
+            section = section.saturating_add(number);
+            total = total.saturating_add(section.saturating_mul(scale));
+            section = 0;
+        }
+        number = 0;
+    }
+    if !saw_number {
+        return None;
+    }
+    Some((
+        total.saturating_add(section).saturating_add(number),
+        consumed,
+    ))
 }
 
 #[cfg(test)]
@@ -194,5 +337,30 @@ mod tests {
         let p = ProjectProfile::new(Some("w".into()), None);
         assert!(!p.is_empty());
         assert_eq!(p.system_messages().len(), 1);
+    }
+
+    #[test]
+    fn extracts_only_the_requested_chapter_section() {
+        let profile = ProjectProfile::new(
+            None,
+            Some("# 总纲\n## 第1章 开端\n建立冲突\n## 第12章 终局\n决战".into()),
+        );
+        let chapter = profile.chapter_outline(12).unwrap();
+        assert!(chapter.contains("第12章"));
+        assert!(chapter.contains("决战"));
+        assert!(!chapter.contains("建立冲突"));
+        assert!(profile.chapter_outline(2).is_none());
+    }
+
+    #[test]
+    fn extracts_chinese_numeral_chapter_section() {
+        let profile = ProjectProfile::new(
+            None,
+            Some("## 第一章 开端\n建立冲突\n## 第十二章 终局\n决战".into()),
+        );
+        let chapter = profile.chapter_outline(12).unwrap();
+        assert!(chapter.contains("第十二章"));
+        assert!(chapter.contains("决战"));
+        assert!(!chapter.contains("建立冲突"));
     }
 }

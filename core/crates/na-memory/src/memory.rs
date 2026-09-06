@@ -23,6 +23,7 @@
 //! recall without a dictionary-based word segmenter.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -30,6 +31,8 @@ use std::path::{Path, PathBuf};
 use na_common::time::now_millis;
 use na_common::{CoreError, MemoryId, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::object_store::atomic_write_file;
 
 use crate::bm25::Bm25Index;
 
@@ -388,6 +391,7 @@ impl MemoryStore {
             .by_id
             .get(&id.0)
             .ok_or_else(|| CoreError::not_found(format!("memory {id} not found")))?;
+        let previous = self.entries.clone();
         {
             let e = &mut self.entries[idx];
             if let Some(k) = new_kind {
@@ -400,7 +404,11 @@ impl MemoryStore {
             }
             e.updated_ms = now_millis();
         }
-        self.persist_all()?;
+        if let Err(error) = self.persist_all() {
+            self.entries = previous;
+            self.rebuild();
+            return Err(error);
+        }
         self.rebuild();
         Ok(())
     }
@@ -412,6 +420,7 @@ impl MemoryStore {
             .by_id
             .get(&id.0)
             .ok_or_else(|| CoreError::not_found(format!("memory {id} not found")))?;
+        let previous = self.entries.clone();
         let changed = {
             let e = &mut self.entries[idx];
             let changed = e.archived != archived;
@@ -422,7 +431,11 @@ impl MemoryStore {
             changed
         };
         if changed {
-            self.persist_all()?;
+            if let Err(error) = self.persist_all() {
+                self.entries = previous;
+                self.rebuild();
+                return Err(error);
+            }
             // index membership is unaffected by archiving; no rebuild needed.
         }
         Ok(())
@@ -435,8 +448,13 @@ impl MemoryStore {
             .by_id
             .get(&id.0)
             .ok_or_else(|| CoreError::not_found(format!("memory {id} not found")))?;
+        let previous = self.entries.clone();
         self.entries.remove(idx);
-        self.persist_all()?;
+        if let Err(error) = self.persist_all() {
+            self.entries = previous;
+            self.rebuild();
+            return Err(error);
+        }
         // indices shifted by the removal — rebuild the id map + BM25 index.
         self.rebuild();
         Ok(())
@@ -477,28 +495,20 @@ impl MemoryStore {
         file.write_all(line.as_bytes())
             .and_then(|_| file.write_all(b"\n"))
             .map_err(|e| CoreError::from(e).with_context("appending memory entry"))?;
+        file.sync_data()
+            .map_err(|e| CoreError::from(e).with_context("flushing memory entry"))?;
         Ok(())
     }
 
     /// Rewrite the whole file from the current entry set (used after in-place
     /// edits). Writes to a temp file then renames for atomicity.
     fn persist_all(&self) -> Result<()> {
-        let tmp = self.path.with_extension("jsonl.tmp");
-        {
-            let mut file = fs::File::create(&tmp)
-                .map_err(|e| CoreError::from(e).with_context("creating memory temp file"))?;
-            for e in &self.entries {
-                let line = serde_json::to_string(e)?;
-                file.write_all(line.as_bytes())
-                    .and_then(|_| file.write_all(b"\n"))
-                    .map_err(|err| CoreError::from(err).with_context("writing memory temp file"))?;
-            }
-            file.flush()
-                .map_err(|e| CoreError::from(e).with_context("flushing memory temp file"))?;
+        let mut bytes = Vec::new();
+        for entry in &self.entries {
+            serde_json::to_writer(&mut bytes, entry)?;
+            bytes.push(b'\n');
         }
-        fs::rename(&tmp, &self.path)
-            .map_err(|e| CoreError::from(e).with_context("replacing memory.jsonl"))?;
-        Ok(())
+        atomic_write_file(&self.path, &bytes, "memory store")
     }
 }
 
@@ -535,6 +545,7 @@ fn load_entries(path: &Path) -> Result<Vec<MemoryEntry>> {
         .map_err(|e| CoreError::from(e).with_context("opening memory.jsonl"))?;
     let reader = BufReader::new(file);
     let mut out = Vec::new();
+    let mut ids = HashSet::new();
     for (lineno, line) in reader.lines().enumerate() {
         let line =
             line.map_err(|e| CoreError::from(e).with_context("reading memory.jsonl line"))?;
@@ -545,6 +556,12 @@ fn load_entries(path: &Path) -> Result<Vec<MemoryEntry>> {
         let entry: MemoryEntry = serde_json::from_str(trimmed).map_err(|e| {
             CoreError::from(e).with_context(format!("parsing memory entry at line {}", lineno + 1))
         })?;
+        if entry.id.0.is_empty() || !ids.insert(entry.id.0.clone()) {
+            return Err(CoreError::new(
+                na_common::ErrorKind::Serialization,
+                format!("empty or duplicate memory id at line {}", lineno + 1),
+            ));
+        }
         out.push(entry);
     }
     Ok(out)
@@ -732,6 +749,81 @@ mod tests {
         // deleting an unknown id is NotFound
         let err = store2.delete(&id1).unwrap_err();
         assert!(err.is(na_common::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn failed_mutations_restore_entries_and_indexes() {
+        fn block(path: &Path) {
+            fs::remove_file(path).unwrap();
+            fs::create_dir(path).unwrap();
+        }
+
+        let classify_dir = TempDir::new();
+        let classify_path = classify_dir.file("classify.jsonl");
+        let mut classify_store = MemoryStore::open(&classify_path).unwrap();
+        let classify_id = classify_store
+            .save(MemoryKind::Other, "符文", "未知", "剑柄符文", vec![], 3)
+            .unwrap();
+        block(&classify_path);
+        assert!(classify_store
+            .classify(&classify_id, Some(MemoryKind::Lore), vec!["新标签".into()])
+            .is_err());
+        let unchanged = classify_store.get(&classify_id).unwrap();
+        assert_eq!(unchanged.kind, MemoryKind::Other);
+        assert!(unchanged.tags.is_empty());
+        assert!(classify_store
+            .recall("剑柄符文", 5, None, false)
+            .iter()
+            .any(|hit| hit.id == classify_id));
+
+        let archive_dir = TempDir::new();
+        let archive_path = archive_dir.file("archive.jsonl");
+        let mut archive_store = MemoryStore::open(&archive_path).unwrap();
+        let archive_id = archive_store
+            .save(MemoryKind::Plot, "伏笔", "未回收", "关键伏笔", vec![], 4)
+            .unwrap();
+        block(&archive_path);
+        assert!(archive_store.archive(&archive_id, true).is_err());
+        assert!(!archive_store.get(&archive_id).unwrap().archived);
+        assert_eq!(archive_store.recall("关键伏笔", 5, None, false).len(), 1);
+
+        let delete_dir = TempDir::new();
+        let delete_path = delete_dir.file("delete.jsonl");
+        let mut delete_store = MemoryStore::open(&delete_path).unwrap();
+        let delete_id = delete_store
+            .save(
+                MemoryKind::Character,
+                "守门人",
+                "角色",
+                "城门守卫",
+                vec![],
+                2,
+            )
+            .unwrap();
+        block(&delete_path);
+        assert!(delete_store.delete(&delete_id).is_err());
+        assert_eq!(delete_store.len(), 1);
+        assert!(delete_store.get(&delete_id).is_some());
+        assert_eq!(delete_store.recall("城门守卫", 5, None, false).len(), 1);
+    }
+
+    #[test]
+    fn duplicate_persisted_memory_ids_are_rejected() {
+        let dir = TempDir::new();
+        let path = dir.file("duplicates.jsonl");
+        let mut store = MemoryStore::open(&path).unwrap();
+        store
+            .save(MemoryKind::Lore, "唯一", "摘要", "内容", vec![], 3)
+            .unwrap();
+        drop(store);
+        let line = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{line}{line}")).unwrap();
+
+        let error = match MemoryStore::open(&path) {
+            Ok(_) => panic!("duplicate ids should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
     }
 
     #[test]

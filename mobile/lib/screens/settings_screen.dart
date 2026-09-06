@@ -23,8 +23,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late AiProvider _draft;
   bool _showKey = false;
   bool _testing = false;
+  bool _saving = false;
   bool? _testOk;
   String _testMsg = '';
+  AiClient? _connectionTestClient;
 
   @override
   void initState() {
@@ -47,27 +49,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _testConnection() async {
     if (_draft.apiKey.isEmpty) {
-      setState(() { _testOk = false; _testMsg = '请先填写 API Key'; });
+      setState(() {
+        _testOk = false;
+        _testMsg = '请先填写 API Key';
+      });
       return;
     }
-    setState(() { _testing = true; _testOk = null; });
+    setState(() {
+      _testing = true;
+      _testOk = null;
+    });
+    final client = AiClient(_draft);
+    _connectionTestClient = client;
     try {
-      final reply = await AiClient(_draft).testConnection();
+      final reply = await client.testConnection();
       if (!mounted) return;
-      setState(() { _testOk = true; _testMsg = '连接成功，模型回复：$reply'; });
+      setState(() {
+        _testOk = true;
+        _testMsg = '连接成功，模型回复：$reply';
+      });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _testOk = false; _testMsg = '连接失败：$e'; });
+      setState(() {
+        _testOk = false;
+        _testMsg = '连接失败：$e';
+      });
     } finally {
-      if (mounted) setState(() => _testing = false);
+      client.close();
+      if (identical(_connectionTestClient, client)) {
+        _connectionTestClient = null;
+        if (mounted) setState(() => _testing = false);
+      }
     }
   }
 
+  @override
+  void dispose() {
+    _connectionTestClient?.cancel();
+    _connectionTestClient = null;
+    super.dispose();
+  }
+
   Future<void> _save() async {
-    await LocalStorage.instance.saveProvider(_draft);
-    widget.onProviderChanged(_draft);
-    if (!mounted) return;
-    showSuccessSnack(context, '已保存，模型切换为 ${_draft.model}');
+    setState(() => _saving = true);
+    try {
+      await LocalStorage.instance.saveProvider(_draft);
+      widget.onProviderChanged(_draft);
+      if (!mounted) return;
+      showSuccessSnack(context, '已保存，模型切换为 ${_draft.model}');
+    } catch (error) {
+      if (!mounted) return;
+      showErrorSnack(context, '保存失败：$error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -79,8 +114,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         StaggeredEntrance(
           index: 0,
           child: sectionCard('快速填充预设', icon: Icons.bolt_outlined, [
-            Text('选择一个服务商预设后，只需填写你自己的 API Key 即可。',
-              style: TextStyle(fontSize: 12.5, color: InkPalette.ink3, height: 1.5)),
+            Text(
+              '选择一个服务商预设后，只需填写你自己的 API Key 即可。',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: InkPalette.ink3,
+                height: 1.5,
+              ),
+            ),
             const SizedBox(height: 12),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -94,24 +135,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: AnimatedContainer(
                         duration: Motion.fast,
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 6),
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color: active
                               ? InkPalette.cinnabarWash
                               : InkPalette.paperLo,
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
-                            color: active ? InkPalette.cinnabar : InkPalette.line,
+                            color: active
+                                ? InkPalette.cinnabar
+                                : InkPalette.line,
                             width: active ? 1.2 : 0.8,
                           ),
                         ),
-                        child: Text(p.name,
+                        child: Text(
+                          p.name,
                           style: TextStyle(
                             fontSize: 12.5,
                             fontWeight: active
-                                ? FontWeight.w600 : FontWeight.normal,
+                                ? FontWeight.w600
+                                : FontWeight.normal,
                             color: active
-                                ? InkPalette.cinnabar : InkPalette.ink2,
+                                ? InkPalette.cinnabar
+                                : InkPalette.ink2,
                           ),
                         ),
                       ),
@@ -126,36 +174,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ── API Key ──
         StaggeredEntrance(
           index: 1,
-          child: sectionCard('API Key', icon: Icons.key_rounded,
+          child: sectionCard(
+            'API Key',
+            icon: Icons.key_rounded,
             subtitle: 'Key 只存在本设备，不经过任何服务器。',
             [
               TextField(
                 obscureText: !_showKey,
                 onChanged: (v) => setState(() {
                   _draft = AiProvider(
-                    name: _draft.name, protocol: _draft.protocol,
-                    baseUrl: _draft.baseUrl, apiKey: v, model: _draft.model,
+                    name: _draft.name,
+                    protocol: _draft.protocol,
+                    baseUrl: _draft.baseUrl,
+                    apiKey: v,
+                    model: _draft.model,
                   );
                 }),
                 controller: TextEditingController.fromValue(
                   TextEditingValue(
                     text: _draft.apiKey,
-                    selection: TextSelection.collapsed(offset: _draft.apiKey.length),
+                    selection: TextSelection.collapsed(
+                      offset: _draft.apiKey.length,
+                    ),
                   ),
                 ),
                 decoration: InputDecoration(
                   labelText: 'API Key',
                   hintText: 'sk-...',
                   suffixIcon: IconButton(
-                    icon: Icon(_showKey
-                        ? Icons.visibility_off_rounded
-                        : Icons.visibility_rounded,
-                      size: 20),
+                    icon: Icon(
+                      _showKey
+                          ? Icons.visibility_off_rounded
+                          : Icons.visibility_rounded,
+                      size: 20,
+                    ),
                     onPressed: () => setState(() => _showKey = !_showKey),
                   ),
                 ),
               ),
-            ]),
+            ],
+          ),
         ),
 
         // ── 接入地址 & 模型 ──
@@ -165,14 +223,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             TextField(
               onChanged: (v) => setState(() {
                 _draft = AiProvider(
-                  name: _draft.name, protocol: _draft.protocol,
-                  baseUrl: v.trim(), apiKey: _draft.apiKey, model: _draft.model,
+                  name: _draft.name,
+                  protocol: _draft.protocol,
+                  baseUrl: v.trim(),
+                  apiKey: _draft.apiKey,
+                  model: _draft.model,
                 );
               }),
               controller: TextEditingController.fromValue(
                 TextEditingValue(
                   text: _draft.baseUrl,
-                  selection: TextSelection.collapsed(offset: _draft.baseUrl.length),
+                  selection: TextSelection.collapsed(
+                    offset: _draft.baseUrl.length,
+                  ),
                 ),
               ),
               keyboardType: TextInputType.url,
@@ -185,15 +248,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             TextField(
               onChanged: (v) => setState(() {
                 _draft = AiProvider(
-                  name: _draft.name, protocol: _draft.protocol,
-                  baseUrl: _draft.baseUrl, apiKey: _draft.apiKey,
+                  name: _draft.name,
+                  protocol: _draft.protocol,
+                  baseUrl: _draft.baseUrl,
+                  apiKey: _draft.apiKey,
                   model: v.trim(),
                 );
               }),
               controller: TextEditingController.fromValue(
                 TextEditingValue(
                   text: _draft.model,
-                  selection: TextSelection.collapsed(offset: _draft.model.length),
+                  selection: TextSelection.collapsed(
+                    offset: _draft.model.length,
+                  ),
                 ),
               ),
               decoration: const InputDecoration(
@@ -212,8 +279,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _save,
-                    icon: const Icon(Icons.save_rounded, size: 18),
+                    onPressed: _saving ? null : _save,
+                    icon: BusyIcon(busy: _saving, icon: Icons.save_rounded),
                     label: const Text('保存配置'),
                   ),
                 ),
@@ -230,29 +297,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: _testOk!
-                      ? const Color(0xFFE8F5EE) : InkPalette.cinnabarWash,
+                      ? const Color(0xFFE8F5EE)
+                      : InkPalette.cinnabarWash,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
                     color: _testOk!
-                        ? const Color(0xFF4CAF50) : InkPalette.cinnabar,
-                    width: 0.8),
+                        ? const Color(0xFF4CAF50)
+                        : InkPalette.cinnabar,
+                    width: 0.8,
+                  ),
                 ),
                 child: Row(
                   children: [
                     Icon(
                       _testOk!
-                          ? Icons.check_circle_rounded : Icons.error_rounded,
+                          ? Icons.check_circle_rounded
+                          : Icons.error_rounded,
                       size: 16,
                       color: _testOk!
-                          ? const Color(0xFF2E7D32) : InkPalette.cinnabar,
+                          ? const Color(0xFF2E7D32)
+                          : InkPalette.cinnabar,
                     ),
                     const SizedBox(width: 8),
-                    Expanded(child: Text(_testMsg,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        color: _testOk!
-                            ? const Color(0xFF2E7D32) : InkPalette.cinnabar,
-                      ))),
+                    Expanded(
+                      child: Text(
+                        _testMsg,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: _testOk!
+                              ? const Color(0xFF2E7D32)
+                              : InkPalette.cinnabar,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -264,14 +341,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
         StaggeredEntrance(
           index: 4,
           child: sectionCard('关于', icon: Icons.info_outline_rounded, const [
-            Text('墨·创作 — AI 驱动的小说创作平台',
-              style: TextStyle(fontSize: 13.5, color: InkPalette.ink)),
+            Text(
+              '墨·创作 — AI 驱动的小说创作平台',
+              style: TextStyle(fontSize: 13.5, color: InkPalette.ink),
+            ),
             SizedBox(height: 4),
-            Text('移动端（Flutter）· 完全本地运行，无需后端。\n'
-                 '支持 OpenAI / DeepSeek / Kimi / 智谱 / Anthropic / Ollama。',
-              style: TextStyle(fontSize: 12.5, color: InkPalette.ink3, height: 1.5)),
+            Text(
+              '移动端（Flutter）· 完全本地运行，无需后端。\n'
+              '支持 OpenAI / DeepSeek / Kimi / 智谱 / Anthropic / Ollama。',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: InkPalette.ink3,
+                height: 1.5,
+              ),
+            ),
             SizedBox(height: 8),
-            Text('v0.3.0', style: TextStyle(fontSize: 12, color: InkPalette.inkGhost)),
+            Text(
+              'v0.3.0',
+              style: TextStyle(fontSize: 12, color: InkPalette.inkGhost),
+            ),
           ]),
         ),
       ],

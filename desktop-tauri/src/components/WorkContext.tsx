@@ -7,6 +7,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -17,7 +18,7 @@ import {
   type WorkMeta,
   type WorkSummary,
 } from "../lib/works";
-import { isDesktop } from "../lib/core";
+import { describeError, isDesktop } from "../lib/core";
 
 interface WorkContextValue {
   /** The active work's full metadata, or null when none / loading. */
@@ -25,6 +26,7 @@ interface WorkContextValue {
   /** Every work in the library, newest-updated first. */
   works: WorkSummary[];
   loading: boolean;
+  error: string | null;
   /** Re-pull the library + active work from the backend. */
   refresh: () => Promise<void>;
   /** Switch the active work (rebuilds the engine backend-side). */
@@ -37,29 +39,44 @@ export function WorkProvider({ children }: { children: ReactNode }) {
   const [current, setCurrent] = useState<WorkMeta | null>(null);
   const [works, setWorks] = useState<WorkSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const stateRequestSeq = useRef(0);
+  const switchChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const refresh = useCallback(async () => {
+    const request = ++stateRequestSeq.current;
     if (!isDesktop()) {
-      setLoading(false);
+      if (request === stateRequestSeq.current) setLoading(false);
       return;
     }
     try {
+      if (request === stateRequestSeq.current) setError(null);
       const [list, cur] = await Promise.all([listWorks(), currentWork()]);
+      if (request !== stateRequestSeq.current) return;
       setWorks(list);
       setCurrent(cur);
-    } catch {
-      /* leave prior state */
+    } catch (refreshError) {
+      if (request === stateRequestSeq.current) {
+        setError(describeError(refreshError));
+      }
     } finally {
-      setLoading(false);
+      if (request === stateRequestSeq.current) setLoading(false);
     }
   }, []);
 
   const switchTo = useCallback(
-    async (id: string) => {
-      const list = await openWork(id);
-      setWorks(list);
-      const cur = await currentWork();
-      setCurrent(cur);
+    (id: string): Promise<void> => {
+      const request = ++stateRequestSeq.current;
+      const transition = switchChainRef.current.then(async () => {
+        const list = await openWork(id);
+        const cur = await currentWork();
+        if (request !== stateRequestSeq.current) return;
+        setWorks(list);
+        setCurrent(cur);
+        setError(null);
+      });
+      switchChainRef.current = transition.catch(() => undefined);
+      return transition;
     },
     [],
   );
@@ -69,7 +86,7 @@ export function WorkProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   return (
-    <WorkContext.Provider value={{ current, works, loading, refresh, switchTo }}>
+    <WorkContext.Provider value={{ current, works, loading, error, refresh, switchTo }}>
       {children}
     </WorkContext.Provider>
   );

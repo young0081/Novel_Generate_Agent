@@ -415,3 +415,10 @@ export const IconAgentMode = (p: IconProps) => (
     <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
   </svg>
 );
+
+/** Focus mode - four corners framing the active manuscript. */
+export const IconFocus = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
+  </svg>
+);

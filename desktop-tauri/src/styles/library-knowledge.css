@@ -52,7 +52,11 @@
   background: transparent;
   color: var(--ink-3);
   cursor: pointer;
-  transition: all var(--dur-2) var(--e-out);
+  transition:
+    background var(--dur-2) var(--e-out),
+    border-color var(--dur-2) var(--e-out),
+    color var(--dur-2) var(--e-out),
+    transform var(--dur-1) var(--e-out);
 }
 .icon-btn:hover {
   background: rgba(37, 32, 28, 0.06);
@@ -151,7 +155,11 @@
   border-radius: var(--r);
   overflow: hidden;
   cursor: pointer;
-  transition: all var(--dur-2) var(--e-out);
+  transition:
+    background var(--dur-2) var(--e-out),
+    border-color var(--dur-2) var(--e-out),
+    box-shadow var(--dur-2) var(--e-out),
+    transform var(--dur-2) var(--e-out);
   text-align: left;
 }
 .work-card:hover {
@@ -242,7 +250,8 @@
   opacity: 0;
   transition: opacity var(--dur-2) var(--e-out);
 }
-.work-card:hover .work-card__actions {
+.work-card:hover .work-card__actions,
+.work-card:focus-within .work-card__actions {
   opacity: 1;
 }
 
@@ -600,8 +609,17 @@
   opacity: 0;
   transition: opacity var(--dur-2) var(--e-out);
 }
-.kb-entry:hover .kb-entry__del {
+.kb-entry:hover .kb-entry__del,
+.kb-entry:focus-within .kb-entry__del,
+.kb-entry__del:focus-visible {
   opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .work-card__actions,
+  .kb-entry__del {
+    opacity: 1;
+  }
 }
 .kb-entry__content {
   font-size: 13px;

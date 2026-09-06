@@ -2,21 +2,28 @@
 //! backend (no separate process, no Node server). Commands are called from the
 //! web UI via `invoke(...)` and dispatch into the shared [`Engine`].
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+mod data_migration;
 
+use std::collections::{HashMap, VecDeque};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::{Duration, Instant};
+
+use na_common::{next_id, CancellationToken};
 use na_host::{outcome_to_json, CompletionResponse, CoreError, Engine, Protocol};
 use na_library::{
     KnowledgeBaseMeta, KnowledgeEntry, KnowledgeHit, KnowledgeKind, KnowledgeStore, WorkMeta,
     WorkStore, WorkSummary,
 };
+use na_memory::{MemoryEntry, MemoryKind};
 use na_runtime::{
     test_connection, CompletionRequest, GoalLoop, LoopHook, LoopHookRegistry, LoopOutcome, Message,
-    ModelProvider, ProjectProfile, ProviderConfig, ProviderSettings, ProviderStore, Session,
-    SessionId, SessionRecord, SessionStore, SessionSummary,
+    ModelProvider, ProjectProfile, ProviderConfig, ProviderSettings, ProviderStore, SamplingParams,
+    Session, SessionRecord, SessionStore, SessionSummary, ToolCallRequest, ToolExecutionOutcome,
 };
 use na_sandbox::Capability;
-use na_tools::{ResultMeta, ToolSpec};
+use na_tools::{ResultMeta, ToolRegistry, ToolSpec};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, State};
 
@@ -27,41 +34,207 @@ use tauri::{Emitter, Manager, State};
 /// the engine pointed at that work's private workspace directory, giving total
 /// isolation between novels (manuscript, memory, checkpoints, story-state, and
 /// knowledge bases are all per-work).
+#[derive(Clone)]
+struct ActiveWorkContext {
+    id: String,
+    engine: Arc<Engine>,
+    workspace_dir: PathBuf,
+    sessions_dir: PathBuf,
+    knowledge_dir: PathBuf,
+    /// Agent runs take an exclusive lease; direct UI tools take a lease based
+    /// on their mutation classification. This prevents a delayed editor save
+    /// from overwriting files while an agent owns the workspace.
+    workspace_gate: Arc<tokio::sync::RwLock<()>>,
+    knowledge_gate: Arc<tokio::sync::Mutex<()>>,
+}
+
 struct AppState {
-    /// The engine for the currently-active work. Swapped on work switch.
-    engine: RwLock<Arc<Engine>>,
+    /// Atomically-published engine and paths for one active work generation.
+    active: RwLock<Option<ActiveWorkContext>>,
     /// The library of all works + the active selection.
     works: Mutex<WorkStore>,
+    /// Serialize provider load-modify-replace transactions.
+    provider_gate: Mutex<()>,
+    /// Active operations share a read lease; work switches/deletes need write.
+    operation_gate: tokio::sync::RwLock<()>,
+    /// Prevent concurrent load-modify-save transactions for one session.
+    session_locks: SessionLockRegistry,
+    /// Request-scoped cancellation tokens for concurrent model operations.
+    cancellations: CancellationRegistry,
+}
+
+#[derive(Default)]
+struct SessionLockRegistry {
+    locks: Mutex<HashMap<SessionLockKey, Weak<SessionMutex>>>,
+}
+
+type SessionLockKey = (String, String);
+type SessionMutex = tokio::sync::Mutex<()>;
+
+impl SessionLockRegistry {
+    fn lock_for(&self, work_id: &str, session_id: &str) -> Result<Arc<SessionMutex>, String> {
+        let mut locks = self
+            .locks
+            .lock()
+            .map_err(|_| "会话锁注册表已损坏".to_string())?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+
+        let key = (work_id.to_string(), session_id.to_string());
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+
+        let lock = Arc::new(SessionMutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        Ok(lock)
+    }
+}
+
+const PENDING_CANCEL_TTL: Duration = Duration::from_secs(30);
+const MAX_PENDING_CANCELS: usize = 64;
+const TARGET_EXISTS_ERROR: &str = "WORKSPACE_TARGET_EXISTS";
+
+#[derive(Default)]
+struct CancellationRegistry {
+    inner: Mutex<CancellationRegistryInner>,
+}
+
+#[derive(Default)]
+struct CancellationRegistryInner {
+    active: HashMap<String, CancellationToken>,
+    pending: VecDeque<(String, Instant)>,
+}
+
+struct CancellationRegistration<'a> {
+    registry: &'a CancellationRegistry,
+    request_id: Option<String>,
+}
+
+impl CancellationRegistry {
+    fn register<'a>(
+        &'a self,
+        request_id: Option<&str>,
+        token: CancellationToken,
+    ) -> Result<CancellationRegistration<'a>, String> {
+        let Some(request_id) = request_id else {
+            return Ok(CancellationRegistration {
+                registry: self,
+                request_id: None,
+            });
+        };
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "取消请求注册表已损坏".to_string())?;
+        Self::prune_pending(&mut inner);
+        if inner.active.contains_key(request_id) {
+            return Err(format!("重复的请求标识: {request_id}"));
+        }
+        if let Some(index) = inner
+            .pending
+            .iter()
+            .position(|(pending_id, _)| pending_id == request_id)
+        {
+            inner.pending.remove(index);
+            token.cancel();
+        }
+        inner.active.insert(request_id.to_string(), token);
+        Ok(CancellationRegistration {
+            registry: self,
+            request_id: Some(request_id.to_string()),
+        })
+    }
+
+    fn cancel(&self, request_id: &str) -> Result<bool, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "取消请求注册表已损坏".to_string())?;
+        Self::prune_pending(&mut inner);
+        if let Some(token) = inner.active.get(request_id) {
+            token.cancel();
+            return Ok(true);
+        }
+        if !inner
+            .pending
+            .iter()
+            .any(|(pending_id, _)| pending_id == request_id)
+        {
+            inner
+                .pending
+                .push_back((request_id.to_string(), Instant::now()));
+            while inner.pending.len() > MAX_PENDING_CANCELS {
+                inner.pending.pop_front();
+            }
+        }
+        Ok(false)
+    }
+
+    fn unregister(&self, request_id: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.active.remove(request_id);
+        }
+    }
+
+    fn prune_pending(inner: &mut CancellationRegistryInner) {
+        let now = Instant::now();
+        inner
+            .pending
+            .retain(|(_, created)| now.duration_since(*created) <= PENDING_CANCEL_TTL);
+    }
+}
+
+impl Drop for CancellationRegistration<'_> {
+    fn drop(&mut self) {
+        if let Some(request_id) = self.request_id.as_deref() {
+            self.registry.unregister(request_id);
+        }
+    }
 }
 
 impl AppState {
-    /// A cloned handle to the active work's engine (cheap Arc clone).
-    fn engine(&self) -> Arc<Engine> {
-        self.engine.read().unwrap().clone()
+    fn active_context(&self) -> Result<ActiveWorkContext, String> {
+        self.active
+            .read()
+            .map_err(|_| "活动作品状态锁已损坏".to_string())?
+            .clone()
+            .ok_or_else(|| "当前没有活动作品".to_string())
+    }
+
+    fn publish_active(&self, active: Option<ActiveWorkContext>) -> Result<(), String> {
+        *self
+            .active
+            .write()
+            .map_err(|_| "活动作品状态锁已损坏".to_string())? = active;
+        Ok(())
+    }
+
+    fn works_store(&self) -> Result<std::sync::MutexGuard<'_, WorkStore>, String> {
+        self.works
+            .lock()
+            .map_err(|_| "作品库状态锁已损坏".to_string())
+    }
+
+    fn provider_lease(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.provider_gate
+            .lock()
+            .map_err(|_| "供应商配置锁已损坏".to_string())
     }
 }
 
 /// The active work's sessions directory (created on demand).
-fn active_sessions_dir(state: &AppState) -> Result<PathBuf, String> {
-    let works = state.works.lock().unwrap();
-    let w = works
-        .active()
-        .ok_or_else(|| "当前没有活动作品".to_string())?;
-    let dir = w.sessions_dir.clone();
-    drop(works);
-    std::fs::create_dir_all(&dir).ok();
+fn active_sessions_dir(active: &ActiveWorkContext) -> Result<PathBuf, String> {
+    let dir = active.sessions_dir.clone();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建会话目录 {}: {e}", dir.display()))?;
     Ok(dir)
 }
 
 /// The active work's knowledge directory (created on demand).
-fn active_knowledge_dir(state: &AppState) -> Result<PathBuf, String> {
-    let works = state.works.lock().unwrap();
-    let w = works
-        .active()
-        .ok_or_else(|| "当前没有活动作品".to_string())?;
-    let dir = w.knowledge_dir.clone();
-    drop(works);
-    std::fs::create_dir_all(&dir).ok();
+fn active_knowledge_dir(active: &ActiveWorkContext) -> Result<PathBuf, String> {
+    let dir = active.knowledge_dir.clone();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建知识库目录 {}: {e}", dir.display()))?;
     Ok(dir)
 }
 
@@ -71,10 +244,10 @@ fn active_knowledge_dir(state: &AppState) -> Result<PathBuf, String> {
 /// the AI reads `writer.md` as a system-level style guide before every run.
 /// Without explicit instructions it tends to dump the chapter text into its
 /// Final Answer (which never touches disk) instead of calling `write_file`.
-fn ensure_default_writer_md(workspace_dir: &std::path::Path) {
+fn ensure_default_writer_md(workspace_dir: &std::path::Path) -> std::io::Result<()> {
     let path = workspace_dir.join("writer.md");
     if path.exists() {
-        return; // author's custom guide takes precedence — never overwrite
+        return Ok(()); // author's custom guide takes precedence — never overwrite
     }
     let default = r#"# 写作规范（系统默认）
 
@@ -98,25 +271,82 @@ Final Answer: 已完成，章节已保存至 book/第一章.md
 - 注重人物情感与场景描写
 - 保持前后文设定一致
 "#;
-    let _ = std::fs::create_dir_all(workspace_dir);
-    let _ = std::fs::write(&path, default.as_bytes());
+    std::fs::create_dir_all(workspace_dir)?;
+    std::fs::write(&path, default.as_bytes())?;
+    Ok(())
 }
 
-/// Rebuild the engine to point at the currently-active work's workspace and swap
-/// it in. Call after changing which work is active.
-fn rebuild_engine_to_active(state: &AppState) -> Result<(), String> {
-    let workspace_dir = {
-        let works = state.works.lock().unwrap();
-        works
-            .active()
-            .ok_or_else(|| "当前没有活动作品".to_string())?
-            .workspace_dir
-            .clone()
-    };
-    ensure_default_writer_md(&workspace_dir);
-    let engine = Engine::new(&workspace_dir).map_err(|e| e.to_string())?;
-    *state.engine.write().unwrap() = Arc::new(engine);
-    Ok(())
+fn safe_chapter_stem(title: &str) -> String {
+    let stem: String = title
+        .trim()
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let stem = stem.trim_matches(|c| c == ' ' || c == '.');
+    if stem.is_empty() {
+        "未命名章节".to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
+/// Save fallback prose without overwriting an existing manuscript.
+fn auto_save_chapter(
+    workspace_root: &std::path::Path,
+    title: &str,
+    content: &str,
+) -> Result<String, String> {
+    let book_dir = workspace_root.join("book");
+    std::fs::create_dir_all(&book_dir)
+        .map_err(|e| format!("无法创建成稿目录 {}: {e}", book_dir.display()))?;
+    let stem = safe_chapter_stem(title);
+    for suffix in 0..1000_u16 {
+        let file_name = if suffix == 0 {
+            format!("{stem}.md")
+        } else {
+            format!("{stem}-自动保存-{suffix}.md")
+        };
+        let path = book_dir.join(&file_name);
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("无法创建成稿 {}: {error}", path.display()));
+            }
+        };
+        if let Err(error) = file.write_all(content.as_bytes()) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("无法写入成稿 {}: {error}", path.display()));
+        }
+        return Ok(format!("book/{file_name}"));
+    }
+    Err("同名自动保存文件过多，请整理 book 目录后重试".to_string())
+}
+
+fn build_active_context(meta: &WorkMeta) -> Result<ActiveWorkContext, String> {
+    ensure_default_writer_md(&meta.workspace_dir)
+        .map_err(|e| format!("无法初始化写作规范 {}: {e}", meta.workspace_dir.display()))?;
+    let engine = Engine::new(&meta.workspace_dir).map_err(|e| e.to_string())?;
+    Ok(ActiveWorkContext {
+        id: meta.id.clone(),
+        engine: Arc::new(engine),
+        workspace_dir: meta.workspace_dir.clone(),
+        sessions_dir: meta.sessions_dir.clone(),
+        knowledge_dir: meta.knowledge_dir.clone(),
+        workspace_gate: Arc::new(tokio::sync::RwLock::new(())),
+        knowledge_gate: Arc::new(tokio::sync::Mutex::new(())),
+    })
 }
 
 /// Render a set of knowledge-base hits into a system steering message so the AI
@@ -134,10 +364,128 @@ fn render_knowledge_prompt(hits: &[KnowledgeHit]) -> String {
     s
 }
 
+const WRITER_PROFILE_MARKER: &str = "# 作者风格指南 (writer.md)";
+const OUTLINE_PROFILE_MARKER: &str = "# 大纲 (outline.md)";
+const MEMORY_OUTLINE_MARKER: &str = "# 大纲参考（策划记忆）";
+const CONSISTENCY_MARKER: &str = "# 连续创作校验";
+const KNOWLEDGE_MARKER: &str = "# 知识库参考（设定准绳）";
+const STORY_STATE_MARKER: &str = "# 当前剧情状态同步";
+const OUTLINE_FOCUS_MARKER: &str = "# 本章大纲收束";
+
+/// Replace one generated system message without accumulating duplicates across
+/// resumed sessions. Keeping generated steering in a stable prefix also lets
+/// Gemini reuse its implicit/explicit context cache.
+fn upsert_generated_system(session: &mut Session, marker: &str, content: Option<String>) {
+    session
+        .messages
+        .retain(|message| !(message.is_system() && message.content.starts_with(marker)));
+    let Some(content) = content else {
+        return;
+    };
+    let insert_at = session
+        .messages
+        .iter()
+        .take_while(|message| message.is_system())
+        .count();
+    session.messages.insert(insert_at, Message::system(content));
+}
+
+/// Refresh writer/outline files on resumed sessions. An edited outline should
+/// take effect on the next run instead of leaving the old system message pinned
+/// in the saved transcript.
+fn sync_project_profile(session: &mut Session, profile: &ProjectProfile) {
+    let messages = profile.system_messages();
+    let writer = messages
+        .iter()
+        .find(|message| message.content.starts_with(WRITER_PROFILE_MARKER))
+        .map(|message| message.content.clone());
+    let outline = messages
+        .iter()
+        .find(|message| message.content.starts_with(OUTLINE_PROFILE_MARKER))
+        .map(|message| message.content.clone());
+    upsert_generated_system(session, WRITER_PROFILE_MARKER, writer);
+    upsert_generated_system(session, OUTLINE_PROFILE_MARKER, outline);
+}
+
+/// Render the latest outline memories created by the planning surface. Older
+/// versions stored outlines only in `.na/memory.jsonl`, so this fills the gap
+/// when an explicit `outline.md` has not been created yet.
+fn render_outline_memory_prompt(entries: &[MemoryEntry]) -> Option<String> {
+    let mut outlines: Vec<&MemoryEntry> = entries
+        .iter()
+        .filter(|entry| entry.kind == MemoryKind::Outline && !entry.archived)
+        .collect();
+    outlines.sort_by_key(|entry| std::cmp::Reverse(entry.updated_ms));
+    if outlines.is_empty() {
+        return None;
+    }
+
+    let mut prompt = String::from(
+        "# 大纲参考（策划记忆）\n\n以下是策划阶段保存的故事大纲。除非作者明确修改，否则不得擅自改变主线、阶段节点或关键转折。\n\n",
+    );
+    let mut used = prompt.chars().count();
+    let mut appended = false;
+    for entry in outlines.into_iter().take(4) {
+        let content = entry.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let block = format!("## {}\n{}\n\n", entry.title, content);
+        let block_chars = block.chars().count();
+        if used + block_chars > 24_000 {
+            break;
+        }
+        prompt.push_str(&block);
+        used += block_chars;
+        appended = true;
+    }
+    appended.then_some(prompt)
+}
+
+fn render_consistency_prompt(chapter_num: u32, title: &str) -> String {
+    format!(
+        "# 连续创作校验（第{chapter_num}章）\n\n\
+本轮目标章节：{title}\n\
+开始写作前，必须先使用 list_dir/read_file 检查 book/ 中最近一章，并读取 outline.md（或 .na/outline.md）中与第{chapter_num}章对应的节点；同时核对作者风格、知识库和当前剧情状态。\n\
+先在思考中列出：本章唯一的推进目标、对应的大纲节点、人物状态变化、时间线位置、需要遵守的硬约束和本章不应提前揭示的信息，再动笔。大纲节点必须按顺序收束，不能跳过前置节点、提前结局、不能提前使用后续章节的转折，也不能擅自增加改变主线的新设定。\n\
+ 如果用户目标与大纲或硬约束冲突，暂停写入并明确指出冲突；没有冲突时不要反复扩展支线。调用 write_file 保存后，必须再次 read_file 复核文件，逐项检查本章目标、大纲节点、人物行为、知识边界和硬约束；发现问题就立即修订。只有复核通过后，才可以报告本章完成。\n"
+    )
+}
+
 /// A loop observer that streams each agent step to the UI as `agent-step` events,
 /// so the 创作 screen can show the AI thinking / calling tools live.
 struct TauriLoopHook {
     app: tauri::AppHandle,
+    request_id: Option<String>,
+}
+
+fn tool_start_payload(step: u32, call: &ToolCallRequest, request_id: Option<&str>) -> Json {
+    serde_json::json!({
+        "phase": "tool_start",
+        "step": step,
+        "id": call.id.as_str(),
+        "name": call.name,
+        "request_id": request_id,
+    })
+}
+
+fn tool_finish_payload(
+    step: u32,
+    call: &ToolCallRequest,
+    outcome: &ToolExecutionOutcome,
+    request_id: Option<&str>,
+) -> Json {
+    serde_json::json!({
+        "phase": "tool_finish",
+        "step": step,
+        "id": call.id.as_str(),
+        "name": call.name,
+        "ok": outcome.ok,
+        "duration_ms": outcome.duration_ms,
+        "summary": outcome.summary,
+        "error": outcome.error,
+        "request_id": request_id,
+    })
 }
 
 impl LoopHook for TauriLoopHook {
@@ -148,14 +496,24 @@ impl LoopHook for TauriLoopHook {
     fn on_step_start(&self, step: u32, session: &Session) {
         let _ = self.app.emit(
             "agent-step",
-            serde_json::json!({ "phase": "step", "step": step, "messages": session.len() }),
+            serde_json::json!({
+                "phase": "step",
+                "step": step,
+                "messages": session.len(),
+                "request_id": self.request_id.as_deref(),
+            }),
         );
     }
 
     fn on_model_delta(&self, step: u32, delta: &str) {
         let _ = self.app.emit(
             "agent-step",
-            serde_json::json!({ "phase": "delta", "step": step, "delta": delta }),
+            serde_json::json!({
+                "phase": "delta",
+                "step": step,
+                "delta": delta,
+                "request_id": self.request_id.as_deref(),
+            }),
         );
     }
 
@@ -163,7 +521,7 @@ impl LoopHook for TauriLoopHook {
         let calls: Vec<Json> = resp
             .tool_calls
             .iter()
-            .map(|c| serde_json::json!({ "name": c.name, "args": c.args }))
+            .map(|c| serde_json::json!({ "id": c.id, "name": c.name, "args": c.args }))
             .collect();
         let _ = self.app.emit(
             "agent-step",
@@ -172,7 +530,23 @@ impl LoopHook for TauriLoopHook {
                 "step": step,
                 "text": resp.text,
                 "tool_calls": calls,
+                "usage": resp.usage,
+                "request_id": self.request_id.as_deref(),
             }),
+        );
+    }
+
+    fn on_tool_start(&self, step: u32, call: &ToolCallRequest) {
+        let _ = self.app.emit(
+            "agent-step",
+            tool_start_payload(step, call, self.request_id.as_deref()),
+        );
+    }
+
+    fn on_tool_finish(&self, step: u32, call: &ToolCallRequest, outcome: &ToolExecutionOutcome) {
+        let _ = self.app.emit(
+            "agent-step",
+            tool_finish_payload(step, call, outcome, self.request_id.as_deref()),
         );
     }
 
@@ -185,6 +559,7 @@ impl LoopHook for TauriLoopHook {
                 "success": outcome.stopped_reason.is_success(),
                 "steps": outcome.steps,
                 "final": outcome.final_answer,
+                "request_id": self.request_id.as_deref(),
             }),
         );
     }
@@ -196,13 +571,18 @@ fn providers_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|e| CoreError::internal(e.to_string()).to_string())?;
-    std::fs::create_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建供应商配置目录 {}: {e}", dir.display()))?;
     Ok(dir.join("providers.json"))
 }
 
 /// Get the full provider configuration (all providers + active selection).
 #[tauri::command]
-fn providers_get(app: tauri::AppHandle) -> Result<ProviderSettings, String> {
+fn providers_get(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ProviderSettings, String> {
+    let _provider_lease = state.provider_lease()?;
     let path = providers_path(&app)?;
     Ok(ProviderStore::open(&path)
         .map_err(|e| e.to_string())?
@@ -212,7 +592,12 @@ fn providers_get(app: tauri::AppHandle) -> Result<ProviderSettings, String> {
 
 /// Add or update a provider; returns the updated settings.
 #[tauri::command]
-fn providers_save(app: tauri::AppHandle, config: ProviderConfig) -> Result<ProviderSettings, String> {
+fn providers_save(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    config: ProviderConfig,
+) -> Result<ProviderSettings, String> {
+    let _provider_lease = state.provider_lease()?;
     let path = providers_path(&app)?;
     let mut store = ProviderStore::open(&path).map_err(|e| e.to_string())?;
     store.upsert(config).map_err(|e| e.to_string())?;
@@ -221,7 +606,12 @@ fn providers_save(app: tauri::AppHandle, config: ProviderConfig) -> Result<Provi
 
 /// Remove a provider; returns the updated settings.
 #[tauri::command]
-fn providers_delete(app: tauri::AppHandle, id: String) -> Result<ProviderSettings, String> {
+fn providers_delete(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ProviderSettings, String> {
+    let _provider_lease = state.provider_lease()?;
     let path = providers_path(&app)?;
     let mut store = ProviderStore::open(&path).map_err(|e| e.to_string())?;
     store.remove(&id).map_err(|e| e.to_string())?;
@@ -232,9 +622,11 @@ fn providers_delete(app: tauri::AppHandle, id: String) -> Result<ProviderSetting
 #[tauri::command]
 fn providers_set_active(
     app: tauri::AppHandle,
+    state: State<'_, AppState>,
     provider_id: String,
     model: String,
 ) -> Result<ProviderSettings, String> {
+    let _provider_lease = state.provider_lease()?;
     let path = providers_path(&app)?;
     let mut store = ProviderStore::open(&path).map_err(|e| e.to_string())?;
     store
@@ -246,12 +638,55 @@ fn providers_set_active(
 /// Test a provider/model by sending a tiny request; returns the reply text.
 #[tauri::command]
 async fn provider_test(config: ProviderConfig, model: String) -> Result<String, String> {
-    test_connection(&config, &model).await.map_err(|e| e.to_string())
+    test_connection(&config, &model)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Directory holding the active work's persisted sessions.
-fn sessions_dir(_app: &tauri::AppHandle, state: &AppState) -> Result<PathBuf, String> {
-    active_sessions_dir(state)
+fn sessions_dir(active: &ActiveWorkContext) -> Result<PathBuf, String> {
+    active_sessions_dir(active)
+}
+
+/// System steering used by the native Agent discussion surface. Keeping this
+/// in the session makes resumed conversations retain the same tool/knowledge
+/// contract instead of relying on the current screen to repeat it.
+fn discuss_agent_system() -> &'static str {
+    "你是「墨·创作」内置的 Agent 对话伙伴，负责和作者一起推演故事。\n\
+你可以读取当前作品文件、检索知识库并调用应用内工具；需要事实时先取证，再给出判断。\n\
+每一步先用简短、可见的思路说明正在确认什么，再调用工具或回答。工具结果必须纳入后续判断，不能把工具调用伪装成已经完成。\n\
+对话以启发和具体建议为主，不擅自改写稿件；只有作者明确要求时才使用写入类工具。"
+}
+
+fn thinking_guidance(level: Option<&str>) -> String {
+    match level.unwrap_or("balanced") {
+        "light" => "本轮思考强度：轻。优先给出直接结论，必要时最多做少量核验。".to_string(),
+        "deep" => "本轮思考强度：深。允许分解问题、交叉核对知识库与作品文件，再给出有依据的方案。"
+            .to_string(),
+        _ => "本轮思考强度：均衡。在响应速度与核验深度之间保持平衡。".to_string(),
+    }
+}
+
+fn thinking_limits(level: Option<&str>) -> (u32, u64, usize) {
+    match level.unwrap_or("balanced") {
+        "light" => (8, 90_000, 80_000),
+        "deep" => (24, 180_000, 320_000),
+        _ => (16, 120_000, 200_000),
+    }
+}
+
+fn configure_discuss_session(session: &mut Session, thinking_level: Option<&str>) {
+    let has_agent_contract = session
+        .history()
+        .iter()
+        .any(|message| message.is_system() && message.content == discuss_agent_system());
+    if !has_agent_contract {
+        session.push(Message::system(discuss_agent_system()));
+    }
+    session
+        .messages
+        .retain(|message| !(message.is_system() && message.content.starts_with("本轮思考强度：")));
+    session.push(Message::system(thinking_guidance(thinking_level)));
 }
 
 /// Drive a real agent loop using the active provider + model.
@@ -262,81 +697,212 @@ fn sessions_dir(_app: &tauri::AppHandle, state: &AppState) -> Result<PathBuf, St
 /// standing instructions. Either way the session is persisted afterward so it
 /// can be browsed and resumed from the 会话 library.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn run_goal_live(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     goal: String,
     title: String,
     session_id: Option<String>,
+    session_kind: Option<String>,
+    request_id: Option<String>,
+    sampling: Option<SamplingParams>,
+    thinking_level: Option<String>,
 ) -> Result<Json, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.write().await;
     let path = providers_path(&app)?;
     let store = ProviderStore::open(&path).map_err(|e| e.to_string())?;
     let agent_protocol = store
         .active()
         .map(|(cfg, _model)| cfg.agent_protocol())
         .unwrap_or(Protocol::NativeToolCall);
-    let provider = store.build_active().map_err(|e| e.to_string())?;
-    let engine = state.engine();
-    let sessions = sessions_dir(&app, &state)?;
-    let knowledge = active_knowledge_dir(&state)?;
-    let active_work_id = state.works.lock().unwrap().active_id().map(|s| s.to_string());
+    let provider = match sampling {
+        Some(params) => store
+            .build_active_with_sampling(params)
+            .map_err(|e| e.to_string())?,
+        None => store.build_active().map_err(|e| e.to_string())?,
+    };
+    let engine = active.engine.clone();
+    let mut operation_ctx = engine.new_operation_context();
+    if request_id.is_some() {
+        operation_ctx.cancel = operation_ctx.cancel.child();
+    }
+    let _cancel_registration = state
+        .cancellations
+        .register(request_id.as_deref(), operation_ctx.cancel.clone())?;
+    operation_ctx
+        .cancel
+        .check()
+        .map_err(|error| error.to_string())?;
+    let sessions = sessions_dir(&active)?;
+    let knowledge = active_knowledge_dir(&active)?;
+    let workspace_root = operation_ctx.jail.root().to_path_buf();
+    let state_path = workspace_root.join("story_state.json");
+    let active_work_id = active.id.clone();
     let sess_store = SessionStore::open(&sessions).map_err(|e| e.to_string())?;
 
     // Continue a saved session, or start a fresh one seeded with writer.md /
     // outline.md so the AI keeps the author's standing voice.
-    let mut session = match session_id.as_deref().and_then(|id| sess_store.get(id).ok()) {
-        Some(rec) => rec.session,
-        None => {
-            let mut s = Session::new(&title);
-            for m in ProjectProfile::load(engine.ctx.jail.root()).system_messages() {
-                s.push(m);
-            }
-            s
+    let session_kind = session_kind.unwrap_or_else(|| "writing".to_string());
+    if !matches!(
+        session_kind.as_str(),
+        "writing" | "planning" | "simulation" | "ide" | "discuss"
+    ) {
+        return Err(format!("不支持的会话类型：{session_kind}"));
+    }
+    let should_auto_save_chapter = session_kind == "writing";
+    let mut fresh_session = if session_id.is_none() {
+        let mut session = Session::new(&title);
+        for message in ProjectProfile::load(operation_ctx.jail.root()).system_messages() {
+            session.push(message);
         }
+        Some(session)
+    } else {
+        None
+    };
+    let session_lock_id = session_id
+        .as_deref()
+        .or_else(|| fresh_session.as_ref().map(|session| session.id.as_str()))
+        .ok_or_else(|| "无法确定会话标识".to_string())?;
+    let session_lock = state
+        .session_locks
+        .lock_for(&active_work_id, session_lock_id)?;
+    let _session_lease = session_lock.lock().await;
+    let mut session = match session_id.as_deref() {
+        Some(id) => {
+            let record = sess_store
+                .get(id)
+                .map_err(|e| format!("无法继续会话 {id}: {e}"))?;
+            if record.kind != session_kind {
+                return Err(format!(
+                    "会话类型不匹配：记录为 {}，请求为 {}",
+                    record.kind, session_kind
+                ));
+            }
+            record.session
+        }
+        None => fresh_session
+            .take()
+            .ok_or_else(|| "新会话初始化失败".to_string())?,
     };
 
-    // RAG: inject relevant knowledge-base facts so the AI stays on-setting.
-    if let Ok(kb_store) = KnowledgeStore::open(&knowledge) {
-        if let Ok(hits) = kb_store.search_active(&format!("{title} {goal}"), 8) {
-            if !hits.is_empty() {
-                session.push(Message::system(render_knowledge_prompt(&hits)));
-            }
-        }
+    // Refresh standing project instructions on every run. Resumed sessions may
+    // contain an older outline or writer guide; replace those generated system
+    // messages in place so the transcript stays stable and cache-friendly.
+    let profile = ProjectProfile::load(operation_ctx.jail.root());
+    sync_project_profile(&mut session, &profile);
+
+    let chapter_num = na_runtime::StoryStateManager::open(&state_path)
+        .map(|mgr| mgr.state.meta.last_chapter.saturating_add(1))
+        .unwrap_or(1);
+    let outline_focus = profile.chapter_outline(chapter_num).map(|section| {
+        format!(
+            "# 本章大纲收束（第{chapter_num}章）\n\n以下是本章对应的大纲节点。只推进这些节点及其必要因果，不要提前使用后续章节的转折；如果节点已经完成，应在本章明确收束。\n\n{section}"
+        )
+    });
+    upsert_generated_system(&mut session, OUTLINE_FOCUS_MARKER, outline_focus);
+
+    if session_kind == "discuss" {
+        // Old chat_stream sessions predate the native Agent contract. Upgrade
+        // them in place, then replace the per-turn thinking hint so changing
+        // the control never leaves conflicting light/deep guidance behind.
+        configure_discuss_session(&mut session, thinking_level.as_deref());
     }
 
+    // RAG: inject relevant knowledge-base facts so the AI stays on-setting.
+    let hits = {
+        let _knowledge_lease = active.knowledge_gate.lock().await;
+        let kb_store = KnowledgeStore::open(&knowledge)
+            .map_err(|e| format!("无法打开知识库用于创作检索: {e}"))?;
+        kb_store
+            .search_active(&format!("{title} {goal}"), 8)
+            .map_err(|e| format!("知识库检索失败: {e}"))?
+    };
+    let knowledge_prompt = (!hits.is_empty()).then(|| render_knowledge_prompt(&hits));
+    upsert_generated_system(&mut session, KNOWLEDGE_MARKER, knowledge_prompt);
+
+    // Planning writes durable outline records to `.na/memory.jsonl`; feed the
+    // latest records back into writing even before an outline.md is created.
+    let outline_memory_prompt = {
+        let memory = operation_ctx
+            .memory
+            .lock()
+            .map_err(|_| "长期记忆存储锁已损坏".to_string())?;
+        render_outline_memory_prompt(memory.all())
+    };
+    upsert_generated_system(&mut session, MEMORY_OUTLINE_MARKER, outline_memory_prompt);
+
     // Load and inject story state if it exists (consistency enhancement).
-    let workspace_root = engine.ctx.jail.root();
-    let state_path = workspace_root.join("story_state.json");
-    if state_path.exists() {
-        if let Ok(mgr) = na_runtime::StoryStateManager::open(&state_path) {
-            // Determine chapter number (from meta or session length heuristic)
-            let chapter_num = mgr.state.meta.last_chapter.saturating_add(1);
-            let ctx_pkg = mgr.prepare_context(chapter_num);
-            let state_prompt = na_runtime::render_state_sync_prompt(&ctx_pkg);
-            // Inject as system message so it appears before the goal
-            session.push(Message::system(state_prompt));
+    let state_prompt = if should_auto_save_chapter || state_path.exists() {
+        let mut mgr = na_runtime::StoryStateManager::open(&state_path)
+            .map_err(|e| format!("故事状态文件损坏或无法读取: {e}"))?;
+        if should_auto_save_chapter {
+            // Keep the current chapter target durable while the run is in
+            // progress. A failed run can then be resumed against the same
+            // target instead of silently drifting to the next chapter.
+            mgr.set_chapter_goal(chapter_num, goal.trim().to_string());
+            mgr.save()
+                .map_err(|e| format!("无法保存本章剧情目标: {e}"))?;
         }
-    }
+        let ctx_pkg = mgr.prepare_context(chapter_num);
+        Some(na_runtime::render_state_sync_prompt(&ctx_pkg))
+    } else {
+        None
+    };
+    upsert_generated_system(&mut session, STORY_STATE_MARKER, state_prompt);
+
+    let consistency_prompt = if session_kind == "writing" {
+        Some(render_consistency_prompt(chapter_num, &title))
+    } else {
+        None
+    };
+    upsert_generated_system(&mut session, CONSISTENCY_MARKER, consistency_prompt);
 
     // Stream each step to the UI.
     let mut hooks = LoopHookRegistry::new();
-    hooks.register(Arc::new(TauriLoopHook { app: app.clone() }));
+    hooks.register(Arc::new(TauriLoopHook {
+        app: app.clone(),
+        request_id,
+    }));
+    let run_history_start = session.history().len();
 
+    let (max_steps, max_wall_ms, max_tokens) = thinking_limits(thinking_level.as_deref());
     let outcome = GoalLoop::with_protocol(agent_protocol)
+        .max_steps(max_steps)
+        .max_wall_ms(max_wall_ms)
+        .max_tokens(max_tokens)
         .loop_hooks(Arc::new(hooks))
-        .run(&goal, &mut session, &provider, &engine.registry, &engine.ctx)
+        .run(
+            &goal,
+            &mut session,
+            &provider,
+            &engine.registry,
+            &operation_ctx,
+        )
         .await;
 
     // Persist whatever the session became (even on error) so context isn't lost.
-    let _ = sess_store.save(&SessionRecord {
-        session: session.clone(),
-        kind: "writing".to_string(),
-        goal: Some(goal.clone()),
-    });
+    sess_store
+        .save(&SessionRecord {
+            session: session.clone(),
+            kind: session_kind,
+            goal: Some(goal.clone()),
+        })
+        .map_err(|e| format!("创作已结束，但会话存档失败: {e}"))?;
 
     // Bump the work's recency so the library sorts it to the top.
-    if let Some(id) = active_work_id {
-        let _ = state.works.lock().unwrap().touch(&id);
+    let mut persistence_warning = None;
+    match state.works_store() {
+        Ok(mut works) => {
+            if let Err(error) = works.touch(&active_work_id) {
+                persistence_warning = Some(format!("会话已保存，但作品更新时间写入失败: {error}"));
+            }
+        }
+        Err(error) => {
+            persistence_warning = Some(format!("会话已保存，但{error}"));
+        }
     }
 
     let outcome = outcome.map_err(|e| e.to_string())?;
@@ -347,32 +913,91 @@ async fn run_goal_live(
     // substantial (> 200 chars), we save it automatically so the content is
     // never silently lost. We only do this when no write_file call is found in
     // the session transcript (i.e. the AI never saved the file itself).
-    let auto_saved_path: Option<String> = {
+    let (auto_saved_path, auto_save_error, chapter_saved): (Option<String>, Option<String>, bool) = {
         let final_text = outcome.final_answer.as_deref().unwrap_or("").trim();
-        let already_saved = session
-            .history()
-            .iter()
-            .any(|m| m.tool_call.as_ref().map(|c| c.name == "write_file").unwrap_or(false));
-        if !already_saved && final_text.chars().count() > 200 {
-            let safe_title: String = title
-                .chars()
-                .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
-                .collect();
-            let rel_path = format!("book/{safe_title}.md");
-            let abs_path = engine.ctx.jail.root().join("book").join(format!("{safe_title}.md"));
-            let _ = std::fs::create_dir_all(abs_path.parent().unwrap());
-            match std::fs::write(&abs_path, final_text.as_bytes()) {
-                Ok(_) => Some(rel_path),
-                Err(_) => None,
+        let already_saved = session.history().iter().skip(run_history_start).any(|m| {
+            let Some(result) = m.tool_result.as_ref() else {
+                return false;
+            };
+            if !result.ok || result.name != "write_file" {
+                return false;
+            }
+            session.history().iter().any(|candidate| {
+                let Some(call) = candidate.tool_call.as_ref() else {
+                    return false;
+                };
+                if call.id != result.call_id || call.name != result.name {
+                    return false;
+                }
+                call.args
+                    .get("path")
+                    .and_then(Json::as_str)
+                    .map(|path| {
+                        let normalized = path.replace('\\', "/");
+                        normalized == "book" || normalized.starts_with("book/")
+                    })
+                    .unwrap_or(false)
+            })
+        });
+        if should_auto_save_chapter && !already_saved && final_text.chars().count() > 200 {
+            match auto_save_chapter(operation_ctx.jail.root(), &title, final_text) {
+                Ok(path) => (Some(path), None, true),
+                Err(error) => (None, Some(error), false),
             }
         } else {
-            None
+            (None, None, already_saved)
         }
     };
 
+    // A completed writing run advances the persisted story cursor. This keeps
+    // the next chapter's context aligned with the manuscript instead of making
+    // every run look like chapter one.
+    if should_auto_save_chapter && outcome.stopped_reason.is_success() && chapter_saved {
+        let state_path = operation_ctx.jail.root().join("story_state.json");
+        match na_runtime::StoryStateManager::open(&state_path) {
+            Ok(mut manager) => {
+                let chapter_num = manager.state.meta.last_chapter.saturating_add(1);
+                manager.add_timeline_event(
+                    chapter_num,
+                    format!("完成《{}》：{}", title.trim(), goal.trim()),
+                );
+                manager.advance_chapter();
+                if let Err(error) = manager.save() {
+                    let message = format!("章节已保存，但剧情状态推进失败: {error}");
+                    persistence_warning = Some(match persistence_warning.take() {
+                        Some(previous) => format!("{previous}; {message}"),
+                        None => message,
+                    });
+                }
+            }
+            Err(error) => {
+                let message = format!("章节已保存，但剧情状态无法读取: {error}");
+                persistence_warning = Some(match persistence_warning.take() {
+                    Some(previous) => format!("{previous}; {message}"),
+                    None => message,
+                });
+            }
+        }
+    }
+
     let mut outcome_json = outcome_to_json(&outcome);
     if let (Some(path), Some(obj)) = (&auto_saved_path, outcome_json.as_object_mut()) {
-        obj.insert("auto_saved_path".to_string(), serde_json::Value::String(path.clone()));
+        obj.insert(
+            "auto_saved_path".to_string(),
+            serde_json::Value::String(path.clone()),
+        );
+    }
+    if let (Some(error), Some(obj)) = (&auto_save_error, outcome_json.as_object_mut()) {
+        obj.insert(
+            "auto_save_error".to_string(),
+            serde_json::Value::String(error.clone()),
+        );
+    }
+    if let (Some(warning), Some(obj)) = (&persistence_warning, outcome_json.as_object_mut()) {
+        obj.insert(
+            "warning".to_string(),
+            serde_json::Value::String(warning.clone()),
+        );
     }
 
     Ok(serde_json::json!({
@@ -389,21 +1014,155 @@ fn ping() -> &'static str {
 
 /// The catalog of every registered tool (specs as JSON).
 #[tauri::command]
-fn list_tools(state: State<'_, AppState>) -> Result<Json, String> {
-    serde_json::to_value(state.engine().list_tools()).map_err(|e| e.to_string())
+async fn list_tools(state: State<'_, AppState>) -> Result<Json, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    serde_json::to_value(state.active_context()?.engine.list_tools()).map_err(|e| e.to_string())
 }
 
 /// Run one tool through the full guarded lifecycle and return its structured
 /// `ToolResult` as JSON. Never throws — tool failures come back as `ok:false`.
 #[tauri::command]
-async fn invoke_tool(
-    state: State<'_, AppState>,
-    name: String,
-    args: Json,
-) -> Result<Json, String> {
-    let engine = state.engine();
-    let result = engine.invoke_tool(&name, args).await;
+async fn invoke_tool(state: State<'_, AppState>, name: String, args: Json) -> Result<Json, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let mutating = active
+        .engine
+        .registry
+        .get(&name)
+        .map(|tool| tool.spec().mutating)
+        .unwrap_or(false);
+    let result = if mutating {
+        let _workspace_lease = active.workspace_gate.write().await;
+        active.engine.invoke_tool(&name, args).await
+    } else {
+        let _workspace_lease = active.workspace_gate.read().await;
+        active.engine.invoke_tool(&name, args).await
+    };
     serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+/// Create or overwrite one text file while holding the work's mutation lease.
+/// The conditional existence check and write are one backend transaction.
+#[tauri::command]
+async fn workspace_create_file(
+    state: State<'_, AppState>,
+    path: String,
+    content: String,
+    overwrite: Option<bool>,
+) -> Result<(), String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.write().await;
+    let resolved = active
+        .engine
+        .ctx
+        .jail
+        .resolve(&path)
+        .map_err(|error| error.to_string())?;
+    if resolved.is_dir() {
+        return Err(format!("目标路径是目录，无法创建文件: {path}"));
+    }
+    if resolved.exists() && !overwrite.unwrap_or(false) {
+        return Err(format!("{TARGET_EXISTS_ERROR}: {path}"));
+    }
+
+    let result = active
+        .engine
+        .invoke_tool(
+            "write_file",
+            serde_json::json!({ "path": path, "content": content }),
+        )
+        .await;
+    if result.ok {
+        Ok(())
+    } else {
+        Err(result.content)
+    }
+}
+
+/// Rename one workspace file without allowing an agent or editor mutation to
+/// interleave between source validation and the filesystem move.
+#[tauri::command]
+async fn workspace_rename_file(
+    state: State<'_, AppState>,
+    old_path: String,
+    new_path: String,
+    overwrite: Option<bool>,
+) -> Result<(), String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.write().await;
+    let source = active
+        .engine
+        .ctx
+        .jail
+        .resolve(&old_path)
+        .map_err(|error| error.to_string())?;
+    let target = active
+        .engine
+        .ctx
+        .jail
+        .resolve(&new_path)
+        .map_err(|error| error.to_string())?;
+    rename_workspace_paths(
+        &source,
+        &target,
+        &old_path,
+        &new_path,
+        overwrite.unwrap_or(false),
+    )
+}
+
+fn rename_workspace_paths(
+    source: &Path,
+    target: &Path,
+    old_path: &str,
+    new_path: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    if source == target {
+        return Ok(());
+    }
+    if !source.exists() {
+        return Err(format!("源文件不存在: {old_path}"));
+    }
+    if source.is_dir() {
+        return Err(format!("源路径是目录，无法重命名: {old_path}"));
+    }
+    if target.is_dir() {
+        return Err(format!("目标路径是目录，无法覆盖: {new_path}"));
+    }
+    if target.exists() && !overwrite {
+        return Err(format!("{TARGET_EXISTS_ERROR}: {new_path}"));
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("目标路径缺少父目录: {new_path}"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建目标目录 {}: {error}", parent.display()))?;
+
+    if !target.exists() {
+        return std::fs::rename(source, target)
+            .map_err(|error| format!("无法将 {old_path} 重命名为 {new_path}: {error}"));
+    }
+
+    // Windows cannot rename over an existing file. Move the destination aside,
+    // move the source, then remove the backup; restore on any move failure.
+    let backup = parent.join(format!(".na-rename-backup-{}", next_id("file")));
+    std::fs::rename(target, &backup)
+        .map_err(|error| format!("无法暂存目标文件 {new_path}: {error}"))?;
+    if let Err(rename_error) = std::fs::rename(source, target) {
+        return match std::fs::rename(&backup, target) {
+            Ok(()) => Err(format!(
+                "无法将 {old_path} 重命名为 {new_path}: {rename_error}"
+            )),
+            Err(restore_error) => Err(format!(
+                "无法将 {old_path} 重命名为 {new_path}: {rename_error}; 恢复原目标也失败: {restore_error}"
+            )),
+        };
+    }
+    let _ = std::fs::remove_file(backup);
+    Ok(())
 }
 
 /// Drive a scripted (offline) goal loop and return `{ outcome, session }`.
@@ -418,7 +1177,10 @@ async fn run_goal(
     protocol: Option<String>,
     responses: Json,
 ) -> Result<Json, String> {
-    let engine = state.engine();
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.write().await;
+    let engine = active.engine;
     let proto = match protocol.as_deref() {
         Some("re_act_text") | Some("react") | Some("react_text") => Protocol::ReActText,
         _ => Protocol::NativeToolCall,
@@ -437,8 +1199,15 @@ async fn run_goal(
 
 /// Cancel any in-flight tool / loop work sharing this context.
 #[tauri::command]
-fn cancel(state: State<'_, AppState>) {
-    state.engine().cancel();
+fn cancel(state: State<'_, AppState>, request_id: Option<String>) -> Result<(), String> {
+    if let Some(request_id) = request_id {
+        state.cancellations.cancel(&request_id)?;
+        return Ok(());
+    }
+    if let Ok(active) = state.active_context() {
+        active.engine.cancel();
+    }
+    Ok(())
 }
 
 /// One chat turn from the UI.
@@ -502,76 +1271,168 @@ async fn chat_stream(
     state: State<'_, AppState>,
     messages: Vec<ChatMsg>,
     session_id: Option<String>,
+    request_id: Option<String>,
 ) -> Result<Json, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let mut operation_ctx = active.engine.new_operation_context();
+    if request_id.is_some() {
+        operation_ctx.cancel = operation_ctx.cancel.child();
+    }
+    let _cancel_registration = state
+        .cancellations
+        .register(request_id.as_deref(), operation_ctx.cancel.clone())?;
+    operation_ctx
+        .cancel
+        .check()
+        .map_err(|error| error.to_string())?;
     let path = providers_path(&app)?;
     let store = ProviderStore::open(&path).map_err(|e| e.to_string())?;
     let provider = store.build_active().map_err(|e| e.to_string())?;
-    let sessions = sessions_dir(&app, &state)?;
+    let sessions = sessions_dir(&active)?;
+    let sess_store = SessionStore::open(&sessions).map_err(|e| e.to_string())?;
+    let mut fresh_session = session_id
+        .is_none()
+        .then(|| Session::new(discuss_title(&messages)));
+    let session_lock_id = session_id
+        .as_deref()
+        .or_else(|| fresh_session.as_ref().map(|session| session.id.as_str()))
+        .ok_or_else(|| "无法确定探讨会话标识".to_string())?;
+    let session_lock = state.session_locks.lock_for(&active.id, session_lock_id)?;
+    let _session_lease = session_lock.lock().await;
 
-    let wire: Vec<Message> = messages
+    let mut wire: Vec<Message> = messages
         .iter()
-        .map(|m| match m.role.as_str() {
-            "system" => Message::system(m.content.clone()),
-            "assistant" => Message::assistant(m.content.clone()),
-            _ => Message::user(m.content.clone()),
-        })
+        .filter(|m| m.role == "system")
+        .map(|m| Message::system(m.content.clone()))
         .collect();
+    let mut session = if let Some(id) = session_id.as_deref() {
+        let record = sess_store
+            .get(id)
+            .map_err(|e| format!("无法继续探讨会话 {id}: {e}"))?;
+        if record.kind != "discuss" {
+            return Err(format!("会话 {id} 不是探讨记录"));
+        }
+        let next_user = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !m.content.trim().is_empty())
+            .ok_or_else(|| "探讨消息不能为空".to_string())?;
+        wire.extend(record.session.history().iter().cloned());
+        wire.push(Message::user(next_user.content.clone()));
+        let mut existing = record.session;
+        existing.push(Message::user(next_user.content.clone()));
+        existing
+    } else {
+        let mut fresh = fresh_session
+            .take()
+            .ok_or_else(|| "新探讨会话初始化失败".to_string())?;
+        for message in messages.iter().filter(|m| m.role != "system") {
+            match message.role.as_str() {
+                "assistant" => fresh.push(Message::assistant(message.content.clone())),
+                _ => fresh.push(Message::user(message.content.clone())),
+            }
+        }
+        wire.extend(messages.iter().filter(|m| m.role != "system").map(
+            |m| match m.role.as_str() {
+                "assistant" => Message::assistant(m.content.clone()),
+                _ => Message::user(m.content.clone()),
+            },
+        ));
+        fresh
+    };
 
     let req = CompletionRequest::new(wire, Vec::new(), Protocol::ReActText);
 
     let sink_app = app.clone();
+    let sink_request_id = request_id.clone();
+    let streamed_text = Arc::new(Mutex::new(String::new()));
+    let streamed_text_sink = streamed_text.clone();
     let on_delta = move |delta: &str| {
-        let _ = sink_app.emit("chat-delta", serde_json::json!({ "delta": delta }));
-    };
-    let resp = provider
-        .complete_streaming(req, &on_delta)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Persist the thread (user/assistant turns) + the new reply as a session.
-    let sess_store = SessionStore::open(&sessions).map_err(|e| e.to_string())?;
-    let mut session = Session::new(discuss_title(&messages));
-    if let Some(id) = &session_id {
-        session.id = SessionId::from_existing(id.clone());
-    }
-    for m in &messages {
-        match m.role.as_str() {
-            "system" => {}
-            "assistant" => session.push(Message::assistant(m.content.clone())),
-            _ => session.push(Message::user(m.content.clone())),
+        if let Ok(mut text) = streamed_text_sink.lock() {
+            text.push_str(delta);
         }
-    }
-    if !resp.text.trim().is_empty() {
-        session.push(Message::assistant(resp.text.clone()));
+        let _ = sink_app.emit(
+            "chat-delta",
+            serde_json::json!({
+                "delta": delta,
+                "request_id": sink_request_id,
+            }),
+        );
+    };
+    let completion = provider.complete_streaming(req, &on_delta);
+    tokio::pin!(completion);
+    let (reply_text, cancelled) = tokio::select! {
+        result = &mut completion => (result.map_err(|e| e.to_string())?.text, false),
+        _ = operation_ctx.cancel.cancelled() => {
+            let partial = streamed_text
+                .lock()
+                .map_err(|_| "对话流状态锁已损坏".to_string())?
+                .clone();
+            (partial, true)
+        },
+    };
+
+    // Persist the canonical thread + the new reply as a session.
+    if !reply_text.trim().is_empty() {
+        session.push(Message::assistant(reply_text.clone()));
     }
     let saved_id = session.id.as_str().to_string();
-    let _ = sess_store.save(&SessionRecord {
-        session,
-        kind: "discuss".to_string(),
-        goal: None,
-    });
+    sess_store
+        .save(&SessionRecord {
+            session,
+            kind: "discuss".to_string(),
+            goal: None,
+        })
+        .map_err(|e| format!("回复已生成，但探讨会话存档失败: {e}"))?;
 
-    Ok(serde_json::json!({ "text": resp.text, "session_id": saved_id }))
+    let warning = match state.works_store() {
+        Ok(mut works) => works
+            .touch(&active.id)
+            .err()
+            .map(|error| format!("会话已保存，但作品更新时间写入失败: {error}")),
+        Err(error) => Some(format!("会话已保存，但{error}")),
+    };
+
+    Ok(serde_json::json!({
+        "text": reply_text,
+        "session_id": saved_id,
+        "warning": warning,
+        "cancelled": cancelled,
+    }))
 }
 
 /// List all persisted sessions (newest first) as lightweight summaries.
 #[tauri::command]
-fn sessions_list(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
-    let store = SessionStore::open(sessions_dir(&app, &state)?).map_err(|e| e.to_string())?;
+async fn sessions_list(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let store = SessionStore::open(sessions_dir(&active)?).map_err(|e| e.to_string())?;
     store.list().map_err(|e| e.to_string())
 }
 
 /// Load one full session record (session + kind + goal) for resuming.
 #[tauri::command]
-fn session_get(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Result<SessionRecord, String> {
-    let store = SessionStore::open(sessions_dir(&app, &state)?).map_err(|e| e.to_string())?;
+async fn session_get(state: State<'_, AppState>, id: String) -> Result<SessionRecord, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let store = SessionStore::open(sessions_dir(&active)?).map_err(|e| e.to_string())?;
+    let session_lock = state.session_locks.lock_for(&active.id, &id)?;
+    let _session_lease = session_lock.lock().await;
     store.get(&id).map_err(|e| e.to_string())
 }
 
 /// Delete a session; returns the updated list.
 #[tauri::command]
-fn session_delete(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Result<Vec<SessionSummary>, String> {
-    let store = SessionStore::open(sessions_dir(&app, &state)?).map_err(|e| e.to_string())?;
+async fn session_delete(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<SessionSummary>, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let store = SessionStore::open(sessions_dir(&active)?).map_err(|e| e.to_string())?;
+    let session_lock = state.session_locks.lock_for(&active.id, &id)?;
+    let _session_lease = session_lock.lock().await;
     store.delete(&id).map_err(|e| e.to_string())?;
     store.list().map_err(|e| e.to_string())
 }
@@ -580,21 +1441,25 @@ fn session_delete(app: tauri::AppHandle, state: State<'_, AppState>, id: String)
 
 /// Load story state from workspace/story_state.json.
 #[tauri::command]
-fn story_state_load(state: State<'_, AppState>) -> Result<na_runtime::StoryState, String> {
-    let engine = state.engine();
-    let state_path = engine.ctx.jail.root().join("story_state.json");
+async fn story_state_load(state: State<'_, AppState>) -> Result<na_runtime::StoryState, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.read().await;
+    let state_path = active.workspace_dir.join("story_state.json");
     let mgr = na_runtime::StoryStateManager::open(&state_path).map_err(|e| e.to_string())?;
     Ok(mgr.state)
 }
 
 /// Save story state to workspace/story_state.json.
 #[tauri::command]
-fn story_state_save(
+async fn story_state_save(
     state: State<'_, AppState>,
     story: na_runtime::StoryState,
 ) -> Result<(), String> {
-    let engine = state.engine();
-    let state_path = engine.ctx.jail.root().join("story_state.json");
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.write().await;
+    let state_path = active.workspace_dir.join("story_state.json");
     let mut mgr = na_runtime::StoryStateManager::open(&state_path).map_err(|e| e.to_string())?;
     mgr.state = story;
     mgr.save().map_err(|e| e.to_string())
@@ -602,12 +1467,14 @@ fn story_state_save(
 
 /// Prepare context package for a given chapter (for preview/debugging).
 #[tauri::command]
-fn story_state_prepare_context(
+async fn story_state_prepare_context(
     state: State<'_, AppState>,
     chapter_num: u32,
 ) -> Result<Json, String> {
-    let engine = state.engine();
-    let state_path = engine.ctx.jail.root().join("story_state.json");
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _workspace_lease = active.workspace_gate.read().await;
+    let state_path = active.workspace_dir.join("story_state.json");
     let mgr = na_runtime::StoryStateManager::open(&state_path).map_err(|e| e.to_string())?;
     let ctx_pkg = mgr.prepare_context(chapter_num);
     // Return as generic JSON since ContextPackage isn't Serialize
@@ -618,54 +1485,92 @@ fn story_state_prepare_context(
 
 /// List every work (newest first), with the active one flagged.
 #[tauri::command]
-fn works_list(state: State<'_, AppState>) -> Result<Vec<WorkSummary>, String> {
-    Ok(state.works.lock().unwrap().list())
+async fn works_list(state: State<'_, AppState>) -> Result<Vec<WorkSummary>, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    Ok(state.works_store()?.list())
 }
 
 /// The active work's full metadata (or null if none).
 #[tauri::command]
-fn works_current(state: State<'_, AppState>) -> Result<Option<WorkMeta>, String> {
-    Ok(state.works.lock().unwrap().active().cloned())
+async fn works_current(state: State<'_, AppState>) -> Result<Option<WorkMeta>, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    Ok(state.works_store()?.active().cloned())
 }
 
 /// Create a new work and switch to it; rebuilds the engine. Returns the new work.
 #[tauri::command]
-fn works_create(
+async fn works_create(
     state: State<'_, AppState>,
     title: String,
     blurb: Option<String>,
     genre: Option<String>,
     source_material: Option<String>,
 ) -> Result<WorkMeta, String> {
-    let meta = {
-        let mut works = state.works.lock().unwrap();
-        works
+    let _operation_lease = state.operation_gate.write().await;
+    let (meta, previous_id) = {
+        let mut works = state.works_store()?;
+        let previous_id = works.active_id().map(str::to_string);
+        let meta = works
             .create(
                 title,
                 blurb.unwrap_or_default(),
                 genre.unwrap_or_default(),
                 source_material.unwrap_or_default(),
             )
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        (meta, previous_id)
     };
-    rebuild_engine_to_active(&state)?;
+    let active = match build_active_context(&meta) {
+        Ok(active) => active,
+        Err(build_error) => {
+            let rollback_error = {
+                let mut works = state.works_store()?;
+                works
+                    .delete(&meta.id, true)
+                    .and_then(|_| match previous_id.as_deref() {
+                        Some(id) => works.set_active(id),
+                        None => Ok(()),
+                    })
+                    .err()
+                    .map(|error| error.to_string())
+            };
+            if let Some(rollback_error) = rollback_error {
+                state.publish_active(None)?;
+                return Err(format!(
+                    "新作品引擎初始化失败: {build_error}; 回滚也失败: {rollback_error}"
+                ));
+            }
+            return Err(format!("新作品引擎初始化失败: {build_error}"));
+        }
+    };
+    state.publish_active(Some(active))?;
     Ok(meta)
 }
 
 /// Switch the active work; rebuilds the engine to its workspace.
 #[tauri::command]
-fn works_open(state: State<'_, AppState>, id: String) -> Result<Vec<WorkSummary>, String> {
-    {
-        let mut works = state.works.lock().unwrap();
+async fn works_open(state: State<'_, AppState>, id: String) -> Result<Vec<WorkSummary>, String> {
+    let _operation_lease = state.operation_gate.write().await;
+    let meta = {
+        let works = state.works_store()?;
+        works
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("unknown work id: {id}"))?
+    };
+    let active = build_active_context(&meta)?;
+    let list = {
+        let mut works = state.works_store()?;
         works.set_active(&id).map_err(|e| e.to_string())?;
-    }
-    rebuild_engine_to_active(&state)?;
-    Ok(state.works.lock().unwrap().list())
+        works.list()
+    };
+    state.publish_active(Some(active))?;
+    Ok(list)
 }
 
 /// Rename / re-blurb / re-tag a work.
 #[tauri::command]
-fn works_update(
+async fn works_update(
     state: State<'_, AppState>,
     id: String,
     title: Option<String>,
@@ -673,7 +1578,8 @@ fn works_update(
     genre: Option<String>,
     source_material: Option<String>,
 ) -> Result<WorkMeta, String> {
-    let mut works = state.works.lock().unwrap();
+    let _operation_lease = state.operation_gate.read().await;
+    let mut works = state.works_store()?;
     works
         .update(&id, title, blurb, genre, source_material)
         .map_err(|e| e.to_string())
@@ -681,30 +1587,64 @@ fn works_update(
 
 /// Delete a work (optionally purging its files); rebuilds engine if active changed.
 #[tauri::command]
-fn works_delete(
+async fn works_delete(
     state: State<'_, AppState>,
     id: String,
     purge_files: Option<bool>,
 ) -> Result<Vec<WorkSummary>, String> {
-    {
-        let mut works = state.works.lock().unwrap();
-        works
-            .delete(&id, purge_files.unwrap_or(true))
-            .map_err(|e| e.to_string())?;
+    let _operation_lease = state.operation_gate.write().await;
+    let (was_active, next_active) = {
+        let works = state.works_store()?;
+        if works.get(&id).is_none() {
+            return Err(format!("unknown work id: {id}"));
+        }
+        let was_active = works.active_id() == Some(id.as_str());
+        let next_meta = if was_active {
+            works
+                .list()
+                .into_iter()
+                .find(|work| work.id != id)
+                .and_then(|work| works.get(&work.id).cloned())
+        } else {
+            None
+        };
+        let next_active = next_meta.as_ref().map(build_active_context).transpose()?;
+        (was_active, next_active)
+    };
+    let previous_active = if was_active {
+        let previous = state.active_context().ok();
+        state.publish_active(None)?;
+        previous
+    } else {
+        None
+    };
+    let list = {
+        let mut works = state.works_store()?;
+        if let Err(error) = works.delete(&id, purge_files.unwrap_or(true)) {
+            if was_active {
+                state.publish_active(previous_active)?;
+            }
+            return Err(error.to_string());
+        }
+        works.list()
+    };
+    if was_active {
+        state.publish_active(next_active)?;
     }
-    // The active work may have changed; rebuild if there's still one.
-    if state.works.lock().unwrap().active().is_some() {
-        rebuild_engine_to_active(&state)?;
-    }
-    Ok(state.works.lock().unwrap().list())
+    Ok(list)
 }
 
 // ---- 知识库 / Knowledge bases ----
 
 /// List the active work's knowledge bases.
 #[tauri::command]
-fn knowledge_list_bases(state: State<'_, AppState>) -> Result<Vec<KnowledgeBaseMeta>, String> {
-    let dir = active_knowledge_dir(&state)?;
+async fn knowledge_list_bases(
+    state: State<'_, AppState>,
+) -> Result<Vec<KnowledgeBaseMeta>, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     KnowledgeStore::open(&dir)
         .and_then(|s| s.list_bases())
         .map_err(|e| e.to_string())
@@ -712,12 +1652,15 @@ fn knowledge_list_bases(state: State<'_, AppState>) -> Result<Vec<KnowledgeBaseM
 
 /// Create a new knowledge base in the active work.
 #[tauri::command]
-fn knowledge_create_base(
+async fn knowledge_create_base(
     state: State<'_, AppState>,
     name: String,
     description: Option<String>,
 ) -> Result<KnowledgeBaseMeta, String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     KnowledgeStore::open(&dir)
         .and_then(|s| s.create_base(name, description.unwrap_or_default()))
         .map_err(|e| e.to_string())
@@ -725,8 +1668,11 @@ fn knowledge_create_base(
 
 /// Delete a knowledge base.
 #[tauri::command]
-fn knowledge_delete_base(state: State<'_, AppState>, kb_id: String) -> Result<(), String> {
-    let dir = active_knowledge_dir(&state)?;
+async fn knowledge_delete_base(state: State<'_, AppState>, kb_id: String) -> Result<(), String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     KnowledgeStore::open(&dir)
         .and_then(|s| s.delete_base(&kb_id))
         .map_err(|e| e.to_string())
@@ -734,12 +1680,15 @@ fn knowledge_delete_base(state: State<'_, AppState>, kb_id: String) -> Result<()
 
 /// Toggle whether a base participates in RAG retrieval.
 #[tauri::command]
-fn knowledge_set_active(
+async fn knowledge_set_active(
     state: State<'_, AppState>,
     kb_id: String,
     active: bool,
 ) -> Result<KnowledgeBaseMeta, String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active_context = state.active_context()?;
+    let _knowledge_lease = active_context.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active_context)?;
     KnowledgeStore::open(&dir)
         .and_then(|s| s.set_base_active(&kb_id, active))
         .map_err(|e| e.to_string())
@@ -747,13 +1696,16 @@ fn knowledge_set_active(
 
 /// Rename / re-describe a base.
 #[tauri::command]
-fn knowledge_update_base(
+async fn knowledge_update_base(
     state: State<'_, AppState>,
     kb_id: String,
     name: Option<String>,
     description: Option<String>,
 ) -> Result<KnowledgeBaseMeta, String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     KnowledgeStore::open(&dir)
         .and_then(|s| s.update_base(&kb_id, name, description))
         .map_err(|e| e.to_string())
@@ -761,11 +1713,14 @@ fn knowledge_update_base(
 
 /// List all entries in a base (full content, newest first).
 #[tauri::command]
-fn knowledge_list_entries(
+async fn knowledge_list_entries(
     state: State<'_, AppState>,
     kb_id: String,
 ) -> Result<Vec<KnowledgeEntry>, String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     let store = KnowledgeStore::open(&dir).map_err(|e| e.to_string())?;
     let kb = store.open_base(&kb_id).map_err(|e| e.to_string())?;
     Ok(kb.entries())
@@ -773,7 +1728,7 @@ fn knowledge_list_entries(
 
 /// Add an entry to a base. `kind` is one of the KnowledgeKind snake_case names.
 #[tauri::command]
-fn knowledge_add_entry(
+async fn knowledge_add_entry(
     state: State<'_, AppState>,
     kb_id: String,
     kind: String,
@@ -782,7 +1737,10 @@ fn knowledge_add_entry(
     source: Option<String>,
     tags: Option<Vec<String>>,
 ) -> Result<String, String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     let store = KnowledgeStore::open(&dir).map_err(|e| e.to_string())?;
     let mut kb = store.open_base(&kb_id).map_err(|e| e.to_string())?;
     let k = parse_kind(&kind);
@@ -798,12 +1756,15 @@ fn knowledge_add_entry(
 
 /// Remove an entry from a base.
 #[tauri::command]
-fn knowledge_delete_entry(
+async fn knowledge_delete_entry(
     state: State<'_, AppState>,
     kb_id: String,
     entry_id: String,
 ) -> Result<(), String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     let store = KnowledgeStore::open(&dir).map_err(|e| e.to_string())?;
     let mut kb = store.open_base(&kb_id).map_err(|e| e.to_string())?;
     kb.remove(&entry_id).map_err(|e| e.to_string())
@@ -811,12 +1772,15 @@ fn knowledge_delete_entry(
 
 /// Search across all *active* knowledge bases (RAG preview).
 #[tauri::command]
-fn knowledge_search(
+async fn knowledge_search(
     state: State<'_, AppState>,
     query: String,
     k: Option<usize>,
 ) -> Result<Vec<KnowledgeHit>, String> {
-    let dir = active_knowledge_dir(&state)?;
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
+    let dir = active_knowledge_dir(&active)?;
     KnowledgeStore::open(&dir)
         .and_then(|s| s.search_active(&query, k.unwrap_or(8)))
         .map_err(|e| e.to_string())
@@ -838,7 +1802,7 @@ fn parse_kind(s: &str) -> KnowledgeKind {
 
 /// Use the active model + its web-fetch tools to auto-fill a knowledge base from
 /// the work's source material. The agent runs a goal loop where it can:
-/// 1. Use `http_get` / web tools to fetch canon material
+/// 1. Use `web_fetch` to fetch canon material
 /// 2. Call a dynamically-registered `knowledge_save` tool to write entries
 ///
 /// Streams progress on `agent-step`. Returns the run outcome + entry count.
@@ -848,7 +1812,11 @@ async fn knowledge_fill_web(
     state: State<'_, AppState>,
     kb_id: String,
     topic: String,
+    request_id: Option<String>,
 ) -> Result<Json, String> {
+    let _operation_lease = state.operation_gate.read().await;
+    let active = state.active_context()?;
+    let _knowledge_lease = active.knowledge_gate.lock().await;
     let path = providers_path(&app)?;
     let store = ProviderStore::open(&path).map_err(|e| e.to_string())?;
     let agent_protocol = store
@@ -856,25 +1824,31 @@ async fn knowledge_fill_web(
         .map(|(cfg, _model)| cfg.agent_protocol())
         .unwrap_or(Protocol::NativeToolCall);
     let provider = store.build_active().map_err(|e| e.to_string())?;
-    let engine = state.engine();
-    let knowledge_dir = active_knowledge_dir(&state)?;
+    let engine = active.engine.clone();
+    let mut operation_ctx = engine.new_operation_context();
+    if request_id.is_some() {
+        operation_ctx.cancel = operation_ctx.cancel.child();
+    }
+    let _cancel_registration = state
+        .cancellations
+        .register(request_id.as_deref(), operation_ctx.cancel.clone())?;
+    operation_ctx
+        .cancel
+        .check()
+        .map_err(|error| error.to_string())?;
+    let knowledge_dir = active_knowledge_dir(&active)?;
 
-    // Inject a custom `knowledge_save` tool into this run's engine clone.
-    // We build a temporary engine with the extra tool so the agent can write
-    // entries directly during the loop.
-    let mut registry = engine.registry.clone();
-    let kb_tool = KnowledgeSaveTool {
-        knowledge_dir: knowledge_dir.clone(),
-        kb_id: kb_id.clone(),
-    };
-    let _ = registry.register(Arc::new(kb_tool));
+    // Web results are untrusted input. Give this loop only the network reader
+    // and a save tool scoped to the selected KB; never expose manuscript,
+    // memory, VCS, or other workspace-mutating tools here.
+    let registry = build_knowledge_fill_registry(&engine, &knowledge_dir, &kb_id)?;
 
     let goal = format!(
-        "你是一名资料整理专家。请研究「{}」这部作品，使用 http_get 工具联网获取相关设定资料\
+        "你是一名资料整理专家。请研究「{}」这部作品，使用 web_fetch 工具联网获取相关设定资料\
         （维基、百科、设定集等），然后调用 knowledge_save 工具将整理好的设定条目保存到知识库。\
         \n\n目标知识库 ID: {}\
         \n\n要求：\n\
-        1. 使用 http_get 获取至少 2-3 个相关网页\n\
+        1. 使用 web_fetch 获取至少 2-3 个相关网页\n\
         2. 提取核心人物、世界规则、重要地点、关键事件、专有术语\n\
         3. 每条设定调用一次 knowledge_save，kind 从 character/location/worldbuilding/event/item/term/lore 中选择\n\
         4. 目标产出 8-20 条结构化设定条目\n\
@@ -887,7 +1861,10 @@ async fn knowledge_fill_web(
 
     // Stream each step to the UI.
     let mut hooks = LoopHookRegistry::new();
-    hooks.register(Arc::new(TauriLoopHook { app: app.clone() }));
+    hooks.register(Arc::new(TauriLoopHook {
+        app: app.clone(),
+        request_id,
+    }));
 
     let outcome = GoalLoop::with_protocol(agent_protocol)
         .loop_hooks(Arc::new(hooks))
@@ -896,7 +1873,7 @@ async fn knowledge_fill_web(
             &mut session,
             &provider,
             &registry,
-            &engine.ctx,
+            &operation_ctx,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -907,19 +1884,46 @@ async fn knowledge_fill_web(
         .history()
         .iter()
         .filter(|m| {
-            m.content.contains("knowledge_save") && m.content.contains("已保存设定条目")
+            m.tool_result
+                .as_ref()
+                .map(|result| result.name == "knowledge_save" && result.ok)
+                .unwrap_or(false)
         })
         .count();
 
     // Reload the bases list so the UI sees the updated entry_count.
     let kstore = KnowledgeStore::open(&knowledge_dir).map_err(|e| e.to_string())?;
-    let _ = kstore.open_base(&kb_id); // trigger meta save
+    kstore
+        .open_base(&kb_id)
+        .map_err(|e| format!("设定已生成，但知识库元数据刷新失败: {e}"))?;
 
     Ok(serde_json::json!({
         "outcome": outcome_to_json(&outcome),
         "added": saved_count,
         "session": serde_json::to_value(&session).map_err(|e| e.to_string())?,
     }))
+}
+
+fn build_knowledge_fill_registry(
+    engine: &Engine,
+    knowledge_dir: &Path,
+    kb_id: &str,
+) -> Result<ToolRegistry, String> {
+    let web_fetch = engine
+        .registry
+        .get("web_fetch")
+        .ok_or_else(|| "核心未注册 web_fetch 工具".to_string())?;
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(web_fetch)
+        .map_err(|error| format!("无法注册联网读取工具: {error}"))?;
+    registry
+        .register(Arc::new(KnowledgeSaveTool {
+            knowledge_dir: knowledge_dir.to_path_buf(),
+            kb_id: kb_id.to_string(),
+        }))
+        .map_err(|error| format!("无法注册知识库保存工具: {error}"))?;
+    Ok(registry)
 }
 
 /// A dynamically-registered tool that writes to a specific knowledge base.
@@ -931,12 +1935,12 @@ struct KnowledgeSaveTool {
 
 impl na_tools::Tool for KnowledgeSaveTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "knowledge_save".to_string(),
-            description: "将一条设定资料保存到当前知识库。kind 可选值: character, location, \
+        ToolSpec::new(
+            "knowledge_save",
+            "将一条设定资料保存到当前知识库。kind 可选值: character, location, \
                 worldbuilding, event, item, term, lore, other。"
                 .to_string(),
-            input_schema: serde_json::json!({
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "kind": {
@@ -955,18 +1959,18 @@ impl na_tools::Tool for KnowledgeSaveTool {
                 },
                 "required": ["kind", "title", "content"]
             }),
-            capabilities: vec![Capability::WriteMemory],
-            mutating: true,
-            concurrency: Default::default(),
-        }
+            vec![Capability::WriteMemory],
+            true,
+        )
     }
 
     fn execute<'a>(
         &'a self,
         args: serde_json::Value,
         _ctx: &'a na_tools::ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = na_common::Result<na_tools::ToolResult>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = na_common::Result<na_tools::ToolResult>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let kind_str = args
                 .get("kind")
@@ -989,10 +1993,7 @@ impl na_tools::Tool for KnowledgeSaveTool {
                         .collect()
                 })
                 .unwrap_or_default();
-            let source = args
-                .get("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("web");
+            let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("web");
 
             let store = KnowledgeStore::open(&self.knowledge_dir)
                 .map_err(|e| CoreError::internal(format!("opening KB store: {e}")))?;
@@ -1025,7 +2026,6 @@ impl na_tools::Tool for KnowledgeSaveTool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // The whole library lives under the OS app-data dir. Each work gets
             // its own isolated workspace under `works/<id>/workspace`. On first
@@ -1034,6 +2034,7 @@ pub fn run() {
             // survive the upgrade without a migration step.
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
+            data_migration::migrate_known_legacy_data(&data_dir).map_err(std::io::Error::other)?;
 
             let mut works = WorkStore::open(&data_dir)?;
             let legacy_ws = data_dir.join("workspace");
@@ -1046,20 +2047,32 @@ pub fn run() {
             }
 
             // Build the engine pointed at the active work's workspace.
-            let workspace_dir = works
+            let active_meta = works
                 .active()
                 .expect("an active work exists after setup")
-                .workspace_dir
                 .clone();
-            std::fs::create_dir_all(&workspace_dir)?;
+            std::fs::create_dir_all(&active_meta.workspace_dir)?;
             // Ensure the default writer.md exists so the AI always has
             // explicit instructions to save chapters via write_file.
-            ensure_default_writer_md(&workspace_dir);
-            let engine = Engine::new(&workspace_dir)?;
+            ensure_default_writer_md(&active_meta.workspace_dir)?;
+            let engine = Engine::new(&active_meta.workspace_dir)?;
+            let active = ActiveWorkContext {
+                id: active_meta.id,
+                engine: Arc::new(engine),
+                workspace_dir: active_meta.workspace_dir,
+                sessions_dir: active_meta.sessions_dir,
+                knowledge_dir: active_meta.knowledge_dir,
+                workspace_gate: Arc::new(tokio::sync::RwLock::new(())),
+                knowledge_gate: Arc::new(tokio::sync::Mutex::new(())),
+            };
 
             app.manage(AppState {
-                engine: RwLock::new(Arc::new(engine)),
+                active: RwLock::new(Some(active)),
                 works: Mutex::new(works),
+                provider_gate: Mutex::new(()),
+                operation_gate: tokio::sync::RwLock::new(()),
+                session_locks: SessionLockRegistry::default(),
+                cancellations: CancellationRegistry::default(),
             });
             Ok(())
         })
@@ -1067,6 +2080,8 @@ pub fn run() {
             ping,
             list_tools,
             invoke_tool,
+            workspace_create_file,
+            workspace_rename_file,
             run_goal,
             cancel,
             providers_get,
@@ -1102,4 +2117,242 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use na_runtime::ToolScheduler;
+    use na_tools::{Tool, ToolConcurrency, ToolContextBuilder, ToolRegistry};
+
+    fn temp_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "desktop_tauri_{tag}_{}",
+            na_common::next_id("test")
+        ))
+    }
+
+    #[test]
+    fn tool_lifecycle_payloads_keep_stable_ids_and_omit_sensitive_data() {
+        let call = ToolCallRequest::with_id(
+            na_common::ToolCallId::from_existing("call_ui_1"),
+            "shell",
+            serde_json::json!({ "command": "private-token=secret" }),
+        );
+        let start = tool_start_payload(3, &call, Some("request-7"));
+        assert_eq!(start["phase"], "tool_start");
+        assert_eq!(start["step"], 3);
+        assert_eq!(start["id"], "call_ui_1");
+        assert_eq!(start["name"], "shell");
+        assert_eq!(start["request_id"], "request-7");
+        assert!(start.get("args").is_none());
+        assert!(!start.to_string().contains("private-token"));
+        assert!(!start.to_string().contains("secret"));
+
+        let outcome = ToolExecutionOutcome::interrupted(42, "cancelled");
+        let finish = tool_finish_payload(3, &call, &outcome, Some("request-7"));
+        assert_eq!(finish["phase"], "tool_finish");
+        assert_eq!(finish["id"], "call_ui_1");
+        assert_eq!(finish["name"], "shell");
+        assert_eq!(finish["ok"], false);
+        assert_eq!(finish["duration_ms"], 42);
+        assert!(finish["summary"].is_null());
+        assert_eq!(finish["error"], "cancelled");
+        assert!(finish.get("args").is_none());
+        assert!(!finish.to_string().contains("private-token"));
+        assert!(!finish.to_string().contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn same_work_session_uses_one_exclusive_lock() {
+        let registry = SessionLockRegistry::default();
+        let first = registry.lock_for("work-a", "session-a").unwrap();
+        let second = registry.lock_for("work-a", "session-a").unwrap();
+        let different = registry.lock_for("work-a", "session-b").unwrap();
+        let other_work = registry.lock_for("work-b", "session-a").unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!Arc::ptr_eq(&first, &different));
+        assert!(!Arc::ptr_eq(&first, &other_work));
+
+        let held = first.lock().await;
+        assert!(second.try_lock().is_err());
+        assert!(different.try_lock().is_ok());
+        assert!(other_work.try_lock().is_ok());
+        drop(held);
+        assert!(second.try_lock().is_ok());
+    }
+
+    #[test]
+    fn request_cancellation_does_not_cancel_siblings() {
+        let registry = CancellationRegistry::default();
+        let root = CancellationToken::new();
+        let first = root.child();
+        let second = root.child();
+        let _first_registration = registry.register(Some("first"), first.clone()).unwrap();
+        let _second_registration = registry.register(Some("second"), second.clone()).unwrap();
+
+        assert!(registry.cancel("first").unwrap());
+        assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+        assert!(!root.is_cancelled());
+    }
+
+    #[test]
+    fn discuss_session_upgrade_keeps_one_contract_and_current_thinking_hint() {
+        let mut session = Session::new("旧探讨");
+        session.push(Message::user("旧版纯聊天消息"));
+        session.push(Message::assistant("旧版回复"));
+
+        configure_discuss_session(&mut session, Some("deep"));
+        configure_discuss_session(&mut session, Some("light"));
+
+        let contract_count = session
+            .history()
+            .iter()
+            .filter(|message| message.is_system() && message.content == discuss_agent_system())
+            .count();
+        let thinking_hints: Vec<_> = session
+            .history()
+            .iter()
+            .filter(|message| message.is_system() && message.content.starts_with("本轮思考强度："))
+            .collect();
+
+        assert_eq!(contract_count, 1);
+        assert_eq!(thinking_hints.len(), 1);
+        assert!(thinking_hints[0].content.contains("轻"));
+        assert!(!thinking_hints[0].content.contains("深。"));
+    }
+
+    #[test]
+    fn discuss_thinking_levels_scale_agent_budgets() {
+        assert_eq!(thinking_limits(Some("light")), (8, 90_000, 80_000));
+        assert_eq!(thinking_limits(Some("balanced")), (16, 120_000, 200_000));
+        assert_eq!(thinking_limits(Some("deep")), (24, 180_000, 320_000));
+        assert_eq!(thinking_limits(Some("unknown")), (16, 120_000, 200_000));
+    }
+
+    #[test]
+    fn writing_consistency_prompt_is_chapter_specific_and_requires_review() {
+        let prompt = render_consistency_prompt(12, "雨夜来客");
+        assert!(prompt.contains("第12章"));
+        assert!(prompt.contains("雨夜来客"));
+        assert!(prompt.contains("read_file"));
+        assert!(prompt.contains("复核"));
+        assert!(prompt.contains("不能提前使用后续章节的转折"));
+    }
+
+    #[test]
+    fn cancellation_before_registration_is_not_lost() {
+        let registry = CancellationRegistry::default();
+        assert!(!registry.cancel("late").unwrap());
+
+        let token = CancellationToken::new();
+        let _registration = registry.register(Some("late"), token.clone()).unwrap();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn completed_request_drops_its_registered_token() {
+        let registry = CancellationRegistry::default();
+        let token = CancellationToken::new();
+        let registration = registry.register(Some("finished"), token).unwrap();
+        assert_eq!(registry.inner.lock().unwrap().active.len(), 1);
+
+        drop(registration);
+        assert!(registry.inner.lock().unwrap().active.is_empty());
+    }
+
+    #[test]
+    fn workspace_rename_is_conditional_and_preserves_latest_source() {
+        let root = temp_root("workspace_rename");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.md");
+        let target = root.join("nested").join("target.md");
+        std::fs::write(&source, "latest source").unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "existing target").unwrap();
+
+        let error =
+            rename_workspace_paths(&source, &target, "source.md", "target.md", false).unwrap_err();
+        assert!(error.contains(TARGET_EXISTS_ERROR));
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "latest source");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "existing target");
+
+        rename_workspace_paths(&source, &target, "source.md", "target.md", true).unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "latest source");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn knowledge_fill_registry_is_least_privilege() {
+        let root = temp_root("knowledge_registry");
+        let workspace = root.join("workspace");
+        let knowledge = root.join("knowledge");
+        let engine = Engine::new(&workspace).unwrap();
+        let registry = build_knowledge_fill_registry(&engine, &knowledge, "kb-test").unwrap();
+
+        assert_eq!(
+            registry.names(),
+            vec!["knowledge_save".to_string(), "web_fetch".to_string()]
+        );
+        assert!(!registry.contains("read_file"));
+        assert!(!registry.contains("write_file"));
+        assert!(!registry.contains("delete_file"));
+        assert!(!registry.contains("shell"));
+        assert!(!registry.contains("git_commit"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn knowledge_save_batch_preserves_every_entry() {
+        let root = temp_root("knowledge_batch");
+        let knowledge_dir = root.join("knowledge");
+        let workspace_dir = root.join("workspace");
+        let store = KnowledgeStore::open(&knowledge_dir).unwrap();
+        let meta = store.create_base("Canon", "batch test").unwrap();
+        let tool = KnowledgeSaveTool {
+            knowledge_dir: knowledge_dir.clone(),
+            kb_id: meta.id.clone(),
+        };
+        let spec = tool.spec();
+        assert!(spec.mutating);
+        assert_eq!(spec.capabilities, vec![Capability::WriteMemory]);
+        assert_eq!(spec.concurrency, ToolConcurrency::Mutating);
+
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(tool)).unwrap();
+        let context = ToolContextBuilder::new(&workspace_dir).build().unwrap();
+        let calls: Vec<_> = (0..8)
+            .map(|index| {
+                ToolCallRequest::new(
+                    "knowledge_save",
+                    serde_json::json!({
+                        "kind": "lore",
+                        "title": format!("Entry {index}"),
+                        "content": format!("Content {index}"),
+                    }),
+                )
+            })
+            .collect();
+
+        let results = ToolScheduler::new()
+            .run_batch(&calls, &tools, &context)
+            .await;
+        assert_eq!(results.len(), calls.len());
+        assert!(results.values().all(|result| result.ok));
+
+        let entries = KnowledgeStore::open(&knowledge_dir)
+            .unwrap()
+            .open_base(&meta.id)
+            .unwrap()
+            .entries();
+        assert_eq!(entries.len(), calls.len());
+
+        drop(context);
+        drop(tools);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

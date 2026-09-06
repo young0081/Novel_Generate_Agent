@@ -1,8 +1,9 @@
 //! Story state manager for loading, saving, and querying story state.
 
 use crate::state::*;
-use na_common::Result;
+use na_common::{CoreError, Result};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Story state manager with atomic file operations.
@@ -15,6 +16,11 @@ impl StoryStateManager {
     /// Open or create story state at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let state_path = path.as_ref().to_path_buf();
+        if let Some(parent) = state_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
         let state = if state_path.exists() {
             let content = fs::read_to_string(&state_path)?;
             serde_json::from_str(&content)?
@@ -25,12 +31,26 @@ impl StoryStateManager {
         Ok(StoryStateManager { state, state_path })
     }
 
-    /// Save state to disk with atomic write (temp file + rename).
+    /// Save state to disk with a flushed atomic replacement.
     pub fn save(&self) -> Result<()> {
-        let tmp = self.state_path.with_extension("json.tmp");
         let content = serde_json::to_string_pretty(&self.state)?;
-        fs::write(&tmp, content)?;
-        fs::rename(&tmp, &self.state_path)?;
+        let parent = self
+            .state_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+            CoreError::from(error).with_context("creating temporary story state")
+        })?;
+        temporary.write_all(content.as_bytes()).map_err(|error| {
+            CoreError::from(error).with_context("writing temporary story state")
+        })?;
+        temporary.as_file().sync_all().map_err(|error| {
+            CoreError::from(error).with_context("flushing temporary story state")
+        })?;
+        temporary
+            .persist(&self.state_path)
+            .map_err(|error| CoreError::from(error.error).with_context("replacing story state"))?;
         Ok(())
     }
 
@@ -72,7 +92,12 @@ impl StoryStateManager {
         self.state
             .foreshadows
             .iter()
-            .filter(|f| matches!(f.status, ForeshadowStatus::Planted | ForeshadowStatus::Hinted))
+            .filter(|f| {
+                matches!(
+                    f.status,
+                    ForeshadowStatus::Planted | ForeshadowStatus::Hinted
+                )
+            })
             .cloned()
             .collect()
     }
@@ -111,6 +136,22 @@ mod tests {
         assert_eq!(mgr2.state.meta.title, "Test Story");
 
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn repeated_save_replaces_the_previous_state() {
+        let path = temp_path("repeat").join("nested/story_state.json");
+        let mut manager = StoryStateManager::open(&path).unwrap();
+        manager.state.meta.title = "First".to_string();
+        manager.save().unwrap();
+        manager.state.meta.title = "Second".to_string();
+        manager.state.meta.last_chapter = 2;
+        manager.save().unwrap();
+
+        let reopened = StoryStateManager::open(&path).unwrap();
+        assert_eq!(reopened.state.meta.title, "Second");
+        assert_eq!(reopened.state.meta.last_chapter, 2);
+        fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
     }
 
     #[test]

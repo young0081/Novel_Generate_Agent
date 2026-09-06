@@ -3,6 +3,10 @@
    类名与 ProvidersScreen.tsx JSX 严格对应；设计延续水墨国风。
    ============================================================ */
 
+/* This chunk is loaded lazily with SettingsModal. Scope every rule so opening
+   settings can never restyle same-named controls in the main workspace. */
+@scope (.settings-sheet) {
+
 /* ── 顶部工具栏 ─────────────────────────────────────────────── */
 .toolbar {
   display: flex;
@@ -146,15 +150,15 @@
 }
 
 .badge--proto.is-anthropic {
-  background: color-mix(in srgb, #c07 8%, var(--paper));
-  border-color: color-mix(in srgb, #c07 25%, transparent);
-  color: #a0064a;
+  background: var(--paper-lo);
+  border-color: var(--line-strong);
+  color: var(--ink-2);
 }
 
 .badge--proto.is-gemini {
-  background: color-mix(in srgb, #1567d3 6%, var(--paper));
-  border-color: color-mix(in srgb, #1567d3 20%, transparent);
-  color: #1358b5;
+  background: var(--cn-wash);
+  border-color: var(--cn-wash-2);
+  color: var(--cn-deep);
 }
 
 /* ── 卡片信息行 ─────────────────────────────────────────────── */
@@ -361,6 +365,19 @@
 }
 
 /* ── 抽屉（编辑侧栏） ───────────────────────────────────────── */
+.provider-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 299;
+  background: rgba(37, 32, 28, 0.22);
+  animation: provider-backdrop-in var(--dur-2) var(--e-out) both;
+}
+
+@keyframes provider-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .drawer {
   position: fixed;
   top: 0;
@@ -374,17 +391,16 @@
   flex-direction: column;
   z-index: 200;
   box-shadow: -6px 0 32px rgba(55, 38, 18, 0.13);
-  animation: drawer-in var(--dur-3) var(--e-quint) both;
+  animation: provider-drawer-in var(--dur-3) var(--e-quint) both;
 }
 
-@keyframes drawer-in {
+@keyframes provider-drawer-in {
   from { transform: translateX(32px); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
 }
 
-/* settings-sheet 内的抽屉：settings-sheet 动画不再使用 transform，
-   fixed 定位可正常工作。覆盖 z-index 确保盖住弹层内容。 */
-.settings-sheet .drawer {
+/* settings-sheet 动画不使用 transform，fixed 抽屉保持贴合视口。 */
+.provider-drawer {
   z-index: 300;
 }
 
@@ -719,4 +735,5 @@
   }
 
   .preset-row { padding-bottom: 6px; }
+}
 }

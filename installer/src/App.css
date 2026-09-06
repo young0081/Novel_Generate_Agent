@@ -149,6 +149,15 @@ button { font-family: inherit; color: inherit; }
   box-shadow: 0 2px 8px rgba(60,20,12,0.4), inset 0 0 0 1px rgba(94,20,13,0.25);
   letter-spacing: 0;
 }
+.wm-icon {
+  display: block;
+  width: 46px;
+  height: 46px;
+  flex: none;
+  object-fit: contain;
+  border-radius: 9px;
+  box-shadow: 0 2px 8px rgba(60,20,12,0.4);
+}
 .wm-rest {
   font-size: 30px; letter-spacing: 0.18em; color: var(--on-cn);
   text-shadow: 0 1px 0 rgba(94,20,13,0.4);
@@ -496,4 +505,383 @@ button { font-family: inherit; color: inherit; }
   .seal-carved { transition: none !important; }
   .ink-btn, .field-box, .rite-mark, .rite-label, .chrome-btn { transition: none !important; }
   .ink-btn--solid::before { display: none !important; }
+}
+
+/* =========================================================================
+   Interaction redesign — the installer should feel like a deliberate,
+   inspectable process rather than a static splash screen. These additions
+   keep motion short and state-driven: a step changes, a file is being written,
+   or the user confirms a destructive choice.
+   ========================================================================= */
+
+.scroll {
+  isolation: isolate;
+}
+
+.stage {
+  padding: 54px 42px 46px 58px;
+}
+
+.panel {
+  max-width: 540px;
+}
+
+.panel--install,
+.panel--done {
+  max-width: 560px;
+}
+
+.lede,
+.title,
+.dek {
+  text-wrap: pretty;
+}
+
+.band-wordmark {
+  transition: transform var(--e-quint) .32s, filter var(--e-out) .32s;
+}
+
+.band:hover .band-wordmark {
+  transform: translateY(-2px);
+  filter: drop-shadow(0 4px 8px rgba(60, 20, 12, .18));
+}
+
+.rite {
+  transition: transform var(--e-quint) .32s, opacity var(--e-out) .28s;
+}
+
+.rite--active {
+  transform: translateX(-2px);
+}
+
+.rite--active .rite-mark {
+  animation: installer-rite-activate .42s var(--e-quint) both;
+}
+
+.rite--done .rite-mark {
+  animation: installer-rite-complete .32s var(--e-out) both;
+}
+
+@keyframes installer-rite-activate {
+  from { opacity: .55; transform: scale(.78) rotate(-8deg); }
+  68% { opacity: 1; transform: scale(1.25) rotate(3deg); }
+  to { opacity: 1; transform: scale(1.18) rotate(0); }
+}
+
+@keyframes installer-rite-complete {
+  from { opacity: .62; transform: scale(.9); }
+  70% { opacity: 1; transform: scale(1.08); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.chrome-btn:focus-visible,
+.ink-btn:focus-visible,
+.data-choice:focus-visible {
+  outline: 2px solid var(--cn);
+  outline-offset: 3px;
+}
+
+.field-box,
+.data-choice {
+  will-change: border-color, box-shadow, transform;
+}
+
+.field-ico {
+  transition: transform var(--e-quint) .24s, color var(--e-out) .2s;
+}
+
+.field-box:focus-within .field-ico {
+  color: var(--cn);
+  transform: translateY(-1px) rotate(-3deg);
+}
+
+.ink-btn--solid:focus-visible {
+  box-shadow: 0 0 0 3px rgba(168, 40, 28, .2), 0 9px 22px -6px rgba(127, 28, 20, .55);
+}
+
+/* Installer progress */
+.install-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+
+.install-phase__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 2px;
+  background: var(--cn);
+  transform: rotate(-7deg);
+}
+
+.panel--install:not(.is-error) .install-phase__dot {
+  animation: installer-phase-pulse 1.7s var(--e-out) infinite;
+}
+
+@keyframes installer-phase-pulse {
+  0%, 100% { opacity: .45; transform: rotate(-7deg) scale(.78); }
+  52% { opacity: 1; transform: rotate(-2deg) scale(1); }
+}
+
+.install-progress {
+  width: min(100%, 312px);
+  margin-top: 22px;
+}
+
+.install-progress__head,
+.install-progress__ticks {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-4);
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+
+.install-progress__head {
+  margin-bottom: 7px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.install-progress__track {
+  height: 7px;
+  overflow: hidden;
+  border: 1px solid rgba(168, 40, 28, .17);
+  border-radius: 999px;
+  background: rgba(168, 40, 28, .08);
+  box-shadow: inset 0 1px 2px rgba(72, 56, 36, .08);
+}
+
+.install-progress__fill {
+  position: relative;
+  display: block;
+  width: 0;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cn-lo), var(--cn-hi));
+  box-shadow: 0 1px 4px rgba(127, 28, 20, .24);
+  transition: width .42s var(--e-quint);
+}
+
+.install-progress__fill::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 48%;
+  background: linear-gradient(100deg, transparent, rgba(255, 247, 236, .46), transparent);
+  content: "";
+  transform: skewX(-18deg);
+  animation: installer-progress-sheen 1.8s var(--e-out) infinite;
+}
+
+.install-progress__ticks {
+  margin-top: 7px;
+  padding: 0 2px;
+}
+
+@keyframes installer-progress-sheen {
+  from { left: -60%; opacity: 0; }
+  18% { opacity: 1; }
+  to { left: 130%; opacity: 0; }
+}
+
+.install-progress--indeterminate .install-progress__fill {
+  width: 38%;
+  animation: installer-progress-indeterminate 1.55s var(--e-quint) infinite;
+}
+
+@keyframes installer-progress-indeterminate {
+  0% { transform: translateX(-125%); }
+  58%, 100% { transform: translateX(270%); }
+}
+
+/* Destructive-choice control on the uninstall screen */
+.data-choice-wrap {
+  width: 100%;
+  max-width: 440px;
+  margin-top: 22px;
+}
+
+.data-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 15px;
+  border: 1.5px solid var(--paper-edge);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .28);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--sans);
+  text-align: left;
+  transition:
+    background var(--e-out) .2s,
+    border-color var(--e-out) .2s,
+    box-shadow var(--e-out) .2s,
+    transform var(--e-out) .16s;
+}
+
+.data-choice:hover {
+  border-color: var(--ink-4);
+  background: rgba(255, 255, 255, .58);
+  transform: translateY(-1px);
+}
+
+.data-choice:active {
+  transform: translateY(1px) scale(.985);
+}
+
+.data-choice.is-selected {
+  border-color: var(--cn);
+  background: rgba(168, 40, 28, .08);
+  box-shadow: 0 5px 14px rgba(127, 28, 20, .1);
+}
+
+.data-choice__check {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  flex: 0 0 21px;
+  place-items: center;
+  border: 2px solid var(--ink-3);
+  border-radius: 5px;
+  background: transparent;
+  transition:
+    background var(--e-quint) .24s,
+    border-color var(--e-quint) .24s,
+    transform var(--e-quint) .24s;
+}
+
+.data-choice.is-selected .data-choice__check {
+  border-color: var(--cn);
+  background: var(--cn);
+  transform: scale(1.05) rotate(-2deg);
+}
+
+.data-choice__body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.data-choice__title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.data-choice__copy {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.data-choice.is-selected .data-choice__title { color: var(--cn-lo); }
+
+/* Uninstall states share the same horizontal seal + copy rhythm as install. */
+.uninstall-seal {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  animation: sealRise .62s var(--e-quint) both;
+}
+
+.panel--welcome .uninstall-seal {
+  align-self: center;
+  margin: 0 0 20px;
+}
+
+.panel--uninstalling,
+.panel--uninstall-done {
+  flex-direction: row;
+  align-items: center;
+  gap: 34px;
+}
+
+.panel--uninstalling .uninstall-seal {
+  animation: sealRise .62s var(--e-quint) both, sealBreath 3.6s var(--e-out) 620ms infinite;
+}
+
+.panel--uninstall-done .uninstall-seal {
+  animation: sealStamp .72s var(--e-press) both;
+}
+
+.uninstall-message {
+  max-width: 36ch;
+  margin-top: 14px;
+  white-space: pre-line;
+}
+
+.uninstall-next {
+  margin-top: 10px;
+  color: var(--ink-4);
+  font-size: 12px;
+}
+
+.panel--uninstalling .install-progress {
+  width: min(100%, 260px);
+  margin-top: 18px;
+}
+
+@media (max-width: 640px) {
+  :root { --band-w: 132px; }
+
+  .stage { padding: 46px 26px 36px 32px; }
+  .panel--install,
+  .panel--done,
+  .panel--uninstalling,
+  .panel--uninstall-done {
+    gap: 22px;
+  }
+  .panel--install .carve-wrap,
+  .panel--done .carve-wrap,
+  .panel--uninstalling .uninstall-seal,
+  .panel--uninstall-done .uninstall-seal {
+    transform: scale(.84);
+    transform-origin: left center;
+  }
+  .pct-num { font-size: 48px; }
+  .rites { padding-left: 23px; }
+  .rites::before { left: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .band:hover .band-wordmark,
+  .rite--active,
+  .field-box:focus-within .field-ico,
+  .data-choice:hover,
+  .data-choice:active,
+  .data-choice.is-selected .data-choice__check,
+  .panel--install .carve-wrap,
+  .panel--done .carve-wrap,
+  .panel--uninstalling .uninstall-seal,
+  .panel--uninstall-done .uninstall-seal {
+    transform: none;
+  }
+
+  .rite--active .rite-mark,
+  .rite--done .rite-mark,
+  .panel--install:not(.is-error) .install-phase__dot,
+  .install-progress__fill::after,
+  .install-progress--indeterminate .install-progress__fill {
+    animation: none !important;
+  }
+
+  .band-wordmark,
+  .field-ico,
+  .data-choice,
+  .data-choice__check,
+  .install-progress__fill { transition: none !important; }
 }

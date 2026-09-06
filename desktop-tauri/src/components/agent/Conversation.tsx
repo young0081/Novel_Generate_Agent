@@ -9,8 +9,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { Spinner } from "../Spinner";
 import { IconUser, IconCompass, IconChat, IconInfo, BrushStroke } from "../icons";
+import AiActivity from "./AiActivity";
+import { scrollLiveAnchor } from "../../lib/liveScroll";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -58,7 +59,10 @@ export default function Conversation({
 
   // keep the newest turn / typing indicator / streaming reply in view
   useEffect(() => {
-    tailRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const frame = window.requestAnimationFrame(() => {
+      scrollLiveAnchor(tailRef.current, { live: sending });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [turns, sending, streamingText]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -126,15 +130,11 @@ export default function Conversation({
             </div>
           ) : (
             <div className="conv-bubble conv-bubble--assistant conv-bubble--typing">
-              <span className="conv-bubble__who">
-                <IconCompass size={13} />
-                {assistantName}
-              </span>
-              <div className="conv-typing" aria-label="对方正在输入">
-                <span className="conv-typing__dot" />
-                <span className="conv-typing__dot" />
-                <span className="conv-typing__dot" />
-              </div>
+              <AiActivity
+                kind="thinking"
+                label={`${assistantName}正在梳理回应`}
+                compact
+              />
             </div>
           ))}
         <div ref={tailRef} />
@@ -156,7 +156,7 @@ export default function Conversation({
           disabled={sending || disabled || !draft.trim()}
           title="发送"
         >
-          {sending ? <Spinner size={16} /> : <IconChat size={16} />}
+          <IconChat size={16} />
           发送
         </button>
       </div>

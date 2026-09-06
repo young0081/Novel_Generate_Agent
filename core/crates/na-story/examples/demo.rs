@@ -1,6 +1,6 @@
 //! Example binary to demonstrate story state management.
 
-use na_story::{StoryStateManager, render_state_sync_prompt};
+use na_story::{render_state_sync_prompt, StoryStateManager};
 
 fn main() -> na_common::Result<()> {
     println!("=== Story State Management Demo ===\n");
@@ -20,7 +20,10 @@ fn main() -> na_common::Result<()> {
     let ctx = mgr.prepare_context(1);
     println!("📋 Context prepared for Chapter 1:");
     println!("   Relevant Characters: {}", ctx.relevant_characters.len());
-    println!("   Hard Constraints (High+): {}", ctx.hard_constraints.len());
+    println!(
+        "   Hard Constraints (High+): {}",
+        ctx.hard_constraints.len()
+    );
     println!("   Pending Foreshadows: {}", ctx.pending_foreshadows.len());
     println!();
 
@@ -35,14 +38,22 @@ fn main() -> na_common::Result<()> {
     // List constraints by priority
     println!("⚠️  Hard Constraints (by priority):");
     for (i, constraint) in ctx.hard_constraints.iter().enumerate() {
-        println!("   {}. [{:?}] {}", i + 1, constraint.severity, constraint.description);
+        println!(
+            "   {}. [{:?}] {}",
+            i + 1,
+            constraint.severity,
+            constraint.description
+        );
     }
     println!();
 
     // List pending foreshadows
     println!("🌱 Pending Foreshadows:");
     for fh in &ctx.pending_foreshadows {
-        println!("   - {} (planted at chapter {})", fh.description, fh.planted_at);
+        println!(
+            "   - {} (planted at chapter {})",
+            fh.description, fh.planted_at
+        );
     }
     println!();
 

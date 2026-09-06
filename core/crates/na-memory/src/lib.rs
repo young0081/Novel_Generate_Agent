@@ -48,14 +48,18 @@ pub mod audit;
 pub mod bm25;
 pub mod checkpoint;
 pub mod memory;
+mod object_store;
 
 // ---- Re-exports for an ergonomic top-level API ----
 
 pub use audit::{AuditEntry, AuditFilter, AuditLog};
 pub use bm25::Bm25Index;
-pub use checkpoint::{content_hash, CheckpointManifest, CheckpointMeta, CheckpointStore};
+pub use checkpoint::{CheckpointManifest, CheckpointMeta, CheckpointStore};
 pub use memory::{
     tokenize, Bm25Retriever, Embedder, MemoryEntry, MemoryKind, MemoryStore, RecallHit, Retriever,
+};
+pub use object_store::{
+    content_hash, read_content_object, validate_content_hash, write_content_object,
 };
 
 // Re-export the common id/result types most callers of this crate will need, so

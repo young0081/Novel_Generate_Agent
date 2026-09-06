@@ -102,7 +102,7 @@ pub use context::{
 // ---- Model provider & orchestration ----
 pub use model::{
     CompletionRequest, CompletionResponse, FinishReason, MockProvider, ModelProvider, Protocol,
-    SamplingParams,
+    SamplingParams, UsageMetadata,
 };
 pub use orchestrator::{AgentAction, Orchestrator};
 
@@ -125,7 +125,9 @@ pub use scheduler::ToolScheduler;
 pub use agent_loop::{loop_guard_error, GoalLoop, LoopGuard, LoopOutcome, StoppedReason};
 
 // ---- Loop / model observability hooks ----
-pub use loop_hooks::{LoopEvent, LoopHook, LoopHookRegistry, RecordingLoopHook};
+pub use loop_hooks::{
+    LoopEvent, LoopHook, LoopHookRegistry, RecordingLoopHook, ToolExecutionOutcome,
+};
 
 // ---- Reusable skills (playbooks) ----
 pub use skills::{skill_system_message, Skill, SkillListTool, SkillLoadTool, SkillRegistry};
@@ -138,9 +140,9 @@ pub use profile::ProjectProfile;
 
 // ---- Story state management (consistency enhancement) ----
 pub use na_story::{
-    CharacterState, ConsistencyGuard, ConsistencyReport, Constraint, ContextPackage,
-    ForeshadowTracker, KnowledgeMatrix, Severity as StorySeverity, StoryState,
-    StoryStateManager, render_state_sync_prompt,
+    render_state_sync_prompt, CharacterState, ConsistencyGuard, ConsistencyReport, Constraint,
+    ContextPackage, ForeshadowTracker, KnowledgeMatrix, Severity as StorySeverity, StoryState,
+    StoryStateManager,
 };
 
 // ---- Convenience common re-exports most callers of this crate will need ----

@@ -197,12 +197,15 @@ fn walk(
     Ok(())
 }
 
-/// Skip the internal `.na` state dir and `.git`.
+/// Skip internal application and VCS state directories.
 fn is_ignored(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|n| n.to_str()),
-        Some(".na") | Some(".git")
-    )
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case(".na")
+                || name.eq_ignore_ascii_case(".na-vcs")
+                || name.eq_ignore_ascii_case(".git")
+        })
 }
 
 /// Trim a matched line to a reasonable snippet length.
@@ -339,5 +342,26 @@ mod tests {
             .collect();
         assert!(files.iter().all(|f| !f.starts_with(".na")));
         assert!(files.contains(&"real.md"));
+    }
+
+    #[tokio::test]
+    async fn search_skips_fiction_vcs_and_case_variants() {
+        let c = ctx("reserved-vcs");
+        for directory in [".na-vcs", ".GIT", ".NA"] {
+            seed(&c, &format!("{directory}/secret.txt"), "needle");
+        }
+        seed(&c, "chapter.txt", "needle");
+
+        let result = SearchTool
+            .execute(json!({ "content_regex": "needle" }), &c)
+            .await
+            .unwrap();
+        let files: Vec<&str> = result.data["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["file"].as_str())
+            .collect();
+        assert_eq!(files, vec!["chapter.txt"]);
     }
 }

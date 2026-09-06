@@ -1,6 +1,5 @@
 // Left navigation with an ink-brush active indicator.
 
-import Seal from "./Seal";
 import { SCREENS, type ScreenId } from "../lib/screens";
 
 interface SidebarProps {
@@ -12,7 +11,7 @@ export default function Sidebar({ active, onSelect }: SidebarProps) {
   return (
     <nav className="sidebar" aria-label="主导航">
       <div className="sidebar__head">
-        <Seal size={34} char="墨" />
+        <img className="brand-mark" src="/icon.png" alt="" aria-hidden="true" />
         <div>
           <div className="sidebar__title">创作工坊</div>
           <div className="sidebar__caption">ATELIER</div>

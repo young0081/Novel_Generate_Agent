@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import Button from "@/components/Button";
 import { useConnection } from "@/components/Connection";
+import { rpcResponse } from "@/lib/rpcClient";
 
 export default function RpcConsole() {
   const { reportError } = useConnection();
@@ -26,12 +27,7 @@ export default function RpcConsole() {
       }
     }
     try {
-      const res = await fetch("/api/rpc", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ method, params: parsed }),
-      });
-      const json = await res.json();
+      const json = await rpcResponse(method, parsed);
       setOut(JSON.stringify(json, null, 2));
       if (json?.error?.message) reportError(String(json.error.message));
     } catch (e: unknown) {

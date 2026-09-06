@@ -32,7 +32,8 @@ class InkRichText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = baseStyle ??
+    final style =
+        baseStyle ??
         const TextStyle(fontSize: 13.5, color: InkPalette.ink, height: 1.6);
     final blocks = _parseBlocks(text);
     if (blocks.isEmpty) return const SizedBox.shrink();
@@ -142,8 +143,7 @@ List<_Block> _parseBlocks(String text) {
       final items = <String>[];
       while (i < lines.length &&
           RegExp(r'^\d+[.、]\s+').hasMatch(lines[i].trimLeft())) {
-        items.add(
-            lines[i].trimLeft().replaceFirst(RegExp(r'^\d+[.、]\s+'), ''));
+        items.add(lines[i].trimLeft().replaceFirst(RegExp(r'^\d+[.、]\s+'), ''));
         i++;
       }
       blocks.add(_NumberList(items));
@@ -170,10 +170,10 @@ List<InlineSpan> parseInline(String text, TextStyle base) {
   final spans = <InlineSpan>[];
   // 统一 token 正则：粗体 | 斜体 | 行内代码 | 删除线
   final pattern = RegExp(
-    r'\*\*([^*]+)\*\*'      // **bold**
-    r'|\*([^*]+)\*'          // *italic*
-    r'|`([^`]+)`'            // `code`
-    r'|~~([^~]+)~~',         // ~~strike~~
+    r'\*\*([^*]+)\*\*' // **bold**
+    r'|\*([^*]+)\*' // *italic*
+    r'|`([^`]+)`' // `code`
+    r'|~~([^~]+)~~', // ~~strike~~
   );
 
   var last = 0;
@@ -183,46 +183,57 @@ List<InlineSpan> parseInline(String text, TextStyle base) {
     }
     if (m.group(1) != null) {
       // bold — 墨色加深加粗
-      spans.add(TextSpan(
-        text: m.group(1),
-        style: base.copyWith(
-          fontWeight: FontWeight.w700, color: InkPalette.ink),
-      ));
+      spans.add(
+        TextSpan(
+          text: m.group(1),
+          style: base.copyWith(
+            fontWeight: FontWeight.w700,
+            color: InkPalette.ink,
+          ),
+        ),
+      );
     } else if (m.group(2) != null) {
       // italic
-      spans.add(TextSpan(
-        text: m.group(2),
-        style: base.copyWith(fontStyle: FontStyle.italic),
-      ));
+      spans.add(
+        TextSpan(
+          text: m.group(2),
+          style: base.copyWith(fontStyle: FontStyle.italic),
+        ),
+      );
     } else if (m.group(3) != null) {
       // inline code — 等宽 + 浅底
-      spans.add(WidgetSpan(
-        alignment: PlaceholderAlignment.middle,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-          decoration: BoxDecoration(
-            color: InkPalette.paperLo,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: InkPalette.line, width: 0.6),
-          ),
-          child: Text(
-            m.group(3)!,
-            style: base.copyWith(
-              fontFamily: 'monospace',
-              fontSize: (base.fontSize ?? 13.5) - 1,
-              color: InkPalette.cinnabar,
+      spans.add(
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: InkPalette.paperLo,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: InkPalette.line, width: 0.6),
+            ),
+            child: Text(
+              m.group(3)!,
+              style: base.copyWith(
+                fontFamily: 'monospace',
+                fontSize: (base.fontSize ?? 13.5) - 1,
+                color: InkPalette.cinnabar,
+              ),
             ),
           ),
         ),
-      ));
+      );
     } else if (m.group(4) != null) {
       // strike
-      spans.add(TextSpan(
-        text: m.group(4),
-        style: base.copyWith(
-          decoration: TextDecoration.lineThrough,
-          color: InkPalette.ink4),
-      ));
+      spans.add(
+        TextSpan(
+          text: m.group(4),
+          style: base.copyWith(
+            decoration: TextDecoration.lineThrough,
+            color: InkPalette.ink4,
+          ),
+        ),
+      );
     }
     last = m.end;
   }
@@ -257,7 +268,11 @@ class _Heading extends _Block {
 
   @override
   Widget build(BuildContext context, TextStyle base, bool selectable) {
-    final size = switch (level) { 1 => 17.0, 2 => 15.5, _ => 14.0 };
+    final size = switch (level) {
+      1 => 17.0,
+      2 => 15.5,
+      _ => 14.0,
+    };
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -268,19 +283,22 @@ class _Heading extends _Block {
           margin: const EdgeInsets.only(right: 7),
           decoration: BoxDecoration(
             color: InkPalette.cinnabar,
-            borderRadius: BorderRadius.circular(2)),
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
         Expanded(
           child: Text.rich(
-            TextSpan(children: parseInline(
-              text,
-              base.copyWith(
-                fontSize: size,
-                fontWeight: FontWeight.w700,
-                color: InkPalette.ink,
-                height: 1.4,
+            TextSpan(
+              children: parseInline(
+                text,
+                base.copyWith(
+                  fontSize: size,
+                  fontWeight: FontWeight.w700,
+                  color: InkPalette.ink,
+                  height: 1.4,
+                ),
               ),
-            )),
+            ),
           ),
         ),
       ],
@@ -300,17 +318,20 @@ class _Quote extends _Block {
       decoration: const BoxDecoration(
         color: Color(0xFFF0EAE0),
         border: Border(
-          left: BorderSide(color: InkPalette.cinnabar, width: 2.5)),
+          left: BorderSide(color: InkPalette.cinnabar, width: 2.5),
+        ),
       ),
       child: Text.rich(
-        TextSpan(children: parseInline(
-          text,
-          base.copyWith(
-            color: InkPalette.ink3,
-            fontStyle: FontStyle.italic,
-            fontSize: (base.fontSize ?? 13.5) - 0.5,
+        TextSpan(
+          children: parseInline(
+            text,
+            base.copyWith(
+              color: InkPalette.ink3,
+              fontStyle: FontStyle.italic,
+              fontSize: (base.fontSize ?? 13.5) - 0.5,
+            ),
           ),
-        )),
+        ),
       ),
     );
   }
@@ -337,14 +358,19 @@ class _BulletList extends _Block {
                   width: 5,
                   height: 5,
                   margin: EdgeInsets.only(
-                    top: ((base.fontSize ?? 13.5) * (base.height ?? 1.6) - 5) / 2,
-                    right: 8, left: 2),
+                    top:
+                        ((base.fontSize ?? 13.5) * (base.height ?? 1.6) - 5) /
+                        2,
+                    right: 8,
+                    left: 2,
+                  ),
                   decoration: const BoxDecoration(
-                    color: InkPalette.cinnabar, shape: BoxShape.circle),
+                    color: InkPalette.cinnabar,
+                    shape: BoxShape.circle,
+                  ),
                 ),
                 Expanded(
-                  child: Text.rich(
-                    TextSpan(children: parseInline(item, base))),
+                  child: Text.rich(TextSpan(children: parseInline(item, base))),
                 ),
               ],
             ),
@@ -372,14 +398,18 @@ class _NumberList extends _Block {
               children: [
                 Container(
                   margin: const EdgeInsets.only(right: 6),
-                  child: Text('${i + 1}.',
+                  child: Text(
+                    '${i + 1}.',
                     style: base.copyWith(
                       color: InkPalette.cinnabar,
-                      fontWeight: FontWeight.w600)),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
                 Expanded(
                   child: Text.rich(
-                    TextSpan(children: parseInline(items[i], base))),
+                    TextSpan(children: parseInline(items[i], base)),
+                  ),
                 ),
               ],
             ),

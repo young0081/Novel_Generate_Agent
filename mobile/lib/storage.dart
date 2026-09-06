@@ -1,11 +1,167 @@
 // storage.dart — 本地存储层：章节、记忆、快照，全部存为 JSON 文件
 // 不依赖后端，所有数据存在设备本地 (path_provider)。
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'ai_client.dart';
+import 'provider_config_store.dart';
+
+class StorageCorruptionException implements Exception {
+  final String filename;
+  final Object cause;
+
+  const StorageCorruptionException(this.filename, this.cause);
+
+  @override
+  String toString() => '本地数据文件 $filename 已损坏: $cause';
+}
+
+class _AsyncSerial {
+  Future<void> _tail = Future<void>.value();
+
+  Future<T> run<T>(Future<T> Function() operation) async {
+    final previous = _tail;
+    final release = Completer<void>();
+    _tail = release.future;
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release.complete();
+    }
+  }
+}
+
+abstract interface class JsonListPersistence {
+  Future<List<Map<String, dynamic>>> readList(String filename);
+
+  Future<void> writeList(String filename, List<Map<String, dynamic>> data);
+}
+
+int _lastGeneratedId = 0;
+
+String _nextLocalId(String prefix) {
+  final timestamp = DateTime.now().microsecondsSinceEpoch;
+  _lastGeneratedId = timestamp > _lastGeneratedId
+      ? timestamp
+      : _lastGeneratedId + 1;
+  return '${prefix}_$_lastGeneratedId';
+}
+
+/// JSON list persistence with a validated temp file and last-known-good backup.
+class JsonListStore implements JsonListPersistence {
+  final Directory directory;
+  final _serial = _AsyncSerial();
+
+  JsonListStore(this.directory);
+
+  File _file(String name) =>
+      File('${directory.path}${Platform.pathSeparator}$name');
+
+  List<Map<String, dynamic>> _decode(String filename, String content) {
+    try {
+      final decoded = jsonDecode(content);
+      if (decoded is! List) throw const FormatException('根节点必须是数组');
+      return decoded
+          .map((item) {
+            if (item is! Map) throw const FormatException('数组元素必须是对象');
+            return Map<String, dynamic>.from(item);
+          })
+          .toList(growable: false);
+    } catch (error) {
+      throw StorageCorruptionException(filename, error);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _readFile(
+    String filename,
+    File file,
+  ) async {
+    return _decode(filename, await file.readAsString());
+  }
+
+  Future<void> _restoreBackup(File target, File backup) async {
+    final recovery = _file('${target.uri.pathSegments.last}.recovering');
+    if (await recovery.exists()) await recovery.delete();
+    await backup.copy(recovery.path);
+    await recovery.open(mode: FileMode.append).then((handle) async {
+      await handle.flush();
+      await handle.close();
+    });
+    if (await target.exists()) await target.delete();
+    await recovery.rename(target.path);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> readList(String filename) {
+    return _serial.run(() => _readList(filename));
+  }
+
+  Future<List<Map<String, dynamic>>> _readList(String filename) async {
+    await directory.create(recursive: true);
+    final target = _file(filename);
+    final backup = _file('$filename.bak');
+
+    if (!await target.exists()) {
+      if (!await backup.exists()) return [];
+      final recovered = await _readFile(filename, backup);
+      await _restoreBackup(target, backup);
+      return recovered;
+    }
+
+    try {
+      return await _readFile(filename, target);
+    } on StorageCorruptionException catch (primaryError) {
+      if (!await backup.exists()) rethrow;
+      try {
+        final recovered = await _readFile(filename, backup);
+        await _restoreBackup(target, backup);
+        return recovered;
+      } on StorageCorruptionException catch (backupError) {
+        throw StorageCorruptionException(
+          filename,
+          '主文件与备份均不可读取（$primaryError；$backupError）',
+        );
+      }
+    }
+  }
+
+  @override
+  Future<void> writeList(String filename, List<Map<String, dynamic>> data) {
+    return _serial.run(() => _writeList(filename, data));
+  }
+
+  Future<void> _writeList(
+    String filename,
+    List<Map<String, dynamic>> data,
+  ) async {
+    await directory.create(recursive: true);
+    final target = _file(filename);
+    final backup = _file('$filename.bak');
+    final temporary = _file('$filename.tmp');
+
+    // Never rotate a corrupt primary over the last-known-good backup.
+    if (await target.exists()) await _readList(filename);
+
+    if (await temporary.exists()) await temporary.delete();
+    await temporary.writeAsString(jsonEncode(data), flush: true);
+    await _readFile(filename, temporary);
+
+    if (await backup.exists()) await backup.delete();
+    if (await target.exists()) await target.rename(backup.path);
+    try {
+      await temporary.rename(target.path);
+    } catch (_) {
+      if (!await target.exists() && await backup.exists()) {
+        await backup.copy(target.path);
+      }
+      rethrow;
+    }
+  }
+}
 
 // ── 数据模型 ────────────────────────────────────────────────────────
 
@@ -25,7 +181,9 @@ class Chapter {
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id, 'title': title, 'content': content,
+    'id': id,
+    'title': title,
+    'content': content,
     'createdAt': createdAt.toIso8601String(),
     'updatedAt': updatedAt.toIso8601String(),
   };
@@ -41,9 +199,11 @@ class Chapter {
   factory Chapter.create(String title) {
     final now = DateTime.now();
     return Chapter(
-      id: 'ch_${now.millisecondsSinceEpoch}',
-      title: title, content: '',
-      createdAt: now, updatedAt: now,
+      id: _nextLocalId('ch'),
+      title: title,
+      content: '',
+      createdAt: now,
+      updatedAt: now,
     );
   }
 }
@@ -56,13 +216,18 @@ class Memory {
   final DateTime createdAt;
 
   Memory({
-    required this.id, required this.kind,
-    required this.title, required this.content,
+    required this.id,
+    required this.kind,
+    required this.title,
+    required this.content,
     required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id, 'kind': kind, 'title': title, 'content': content,
+    'id': id,
+    'kind': kind,
+    'title': title,
+    'content': content,
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -74,11 +239,16 @@ class Memory {
     createdAt: DateTime.parse(j['createdAt'] as String),
   );
 
-  factory Memory.create({required String kind, required String title,
-      required String content}) {
+  factory Memory.create({
+    required String kind,
+    required String title,
+    required String content,
+  }) {
     return Memory(
-      id: 'mem_${DateTime.now().millisecondsSinceEpoch}',
-      kind: kind, title: title, content: content,
+      id: _nextLocalId('mem'),
+      kind: kind,
+      title: title,
+      content: content,
       createdAt: DateTime.now(),
     );
   }
@@ -93,19 +263,26 @@ class Checkpoint {
   final DateTime createdAt;
 
   Checkpoint({
-    required this.id, required this.chapterId,
-    required this.chapterTitle, required this.content,
-    required this.message, required this.createdAt,
+    required this.id,
+    required this.chapterId,
+    required this.chapterTitle,
+    required this.content,
+    required this.message,
+    required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id, 'chapterId': chapterId,
-    'chapterTitle': chapterTitle, 'content': content,
-    'message': message, 'createdAt': createdAt.toIso8601String(),
+    'id': id,
+    'chapterId': chapterId,
+    'chapterTitle': chapterTitle,
+    'content': content,
+    'message': message,
+    'createdAt': createdAt.toIso8601String(),
   };
 
   factory Checkpoint.fromJson(Map<String, dynamic> j) => Checkpoint(
-    id: j['id'] as String, chapterId: j['chapterId'] as String? ?? '',
+    id: j['id'] as String,
+    chapterId: j['chapterId'] as String? ?? '',
     chapterTitle: j['chapterTitle'] as String? ?? '',
     content: j['content'] as String? ?? '',
     message: j['message'] as String? ?? '',
@@ -118,158 +295,246 @@ class Checkpoint {
 class LocalStorage {
   static LocalStorage? _instance;
   static LocalStorage get instance => _instance ??= LocalStorage._();
-  LocalStorage._();
+
+  LocalStorage._({
+    ProviderConfigStore? providerConfig,
+    JsonListPersistence? jsonStore,
+  }) : _providerConfig = providerConfig ?? ProviderConfigStore.platform(),
+       _storeFuture = jsonStore == null
+           ? null
+           : Future<JsonListPersistence>.value(jsonStore);
+
+  factory LocalStorage.forTesting({
+    required JsonListPersistence jsonStore,
+    ProviderConfigStore? providerConfig,
+  }) => LocalStorage._(providerConfig: providerConfig, jsonStore: jsonStore);
+
+  final ProviderConfigStore _providerConfig;
+  final _transactions = _AsyncSerial();
+  Future<JsonListPersistence>? _storeFuture;
 
   Future<Directory> get _dir async {
     final base = await getApplicationDocumentsDirectory();
     final d = Directory('${base.path}/novel_agent');
-    if (!d.existsSync()) d.createSync(recursive: true);
+    if (!await d.exists()) await d.create(recursive: true);
     return d;
   }
 
-  File _file(Directory dir, String name) => File('${dir.path}/$name');
+  Future<JsonListPersistence> _createStore() async => JsonListStore(await _dir);
+
+  Future<JsonListPersistence> get _store => _storeFuture ??= _createStore();
 
   // ── 通用 JSON 读写 ────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> _readList(String filename) async {
-    final dir = await _dir;
-    final f = _file(dir, filename);
-    if (!f.existsSync()) return [];
-    try {
-      return (jsonDecode(f.readAsStringSync()) as List)
-          .cast<Map<String, dynamic>>();
-    } catch (_) { return []; }
+    return (await _store).readList(filename);
   }
 
-  Future<void> _writeList(String filename, List<Map<String, dynamic>> data) async {
-    final dir = await _dir;
-    _file(dir, filename).writeAsStringSync(jsonEncode(data));
+  Future<void> _writeList(
+    String filename,
+    List<Map<String, dynamic>> data,
+  ) async {
+    await (await _store).writeList(filename, data);
+  }
+
+  Future<List<T>> _readModels<T>(
+    String filename,
+    T Function(Map<String, dynamic>) decode,
+  ) async {
+    final raw = await _readList(filename);
+    try {
+      return raw.map(decode).toList();
+    } catch (error) {
+      throw StorageCorruptionException(filename, error);
+    }
   }
 
   // ── 章节 CRUD ─────────────────────────────────────────────────────
 
-  Future<List<Chapter>> listChapters() async {
-    final raw = await _readList('chapters.json');
-    return raw.map(Chapter.fromJson).toList()
+  Future<List<Chapter>> _listChapters() async {
+    return await _readModels('chapters.json', Chapter.fromJson)
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
 
-  Future<void> saveChapter(Chapter ch) async {
-    final all = await listChapters();
-    final idx = all.indexWhere((c) => c.id == ch.id);
-    ch.updatedAt = DateTime.now();
-    if (idx >= 0) all[idx] = ch; else all.insert(0, ch);
-    await _writeList('chapters.json', all.map((c) => c.toJson()).toList());
+  Future<List<Chapter>> listChapters() {
+    return _transactions.run(_listChapters);
   }
 
-  Future<void> deleteChapter(String id) async {
-    final all = await listChapters();
-    all.removeWhere((c) => c.id == id);
-    await _writeList('chapters.json', all.map((c) => c.toJson()).toList());
-    // 同时删除该章节的所有快照
-    final cps = await listCheckpoints();
-    final remaining = cps.where((c) => c.chapterId != id).toList();
-    await _writeList('checkpoints.json', remaining.map((c) => c.toJson()).toList());
+  Future<void> saveChapter(Chapter ch) {
+    return _transactions.run(() async {
+      final all = await _listChapters();
+      final idx = all.indexWhere((c) => c.id == ch.id);
+      ch.updatedAt = DateTime.now();
+      if (idx >= 0) {
+        all[idx] = ch;
+      } else {
+        all.insert(0, ch);
+      }
+      await _writeList('chapters.json', all.map((c) => c.toJson()).toList());
+    });
+  }
+
+  Future<void> deleteChapter(String id) {
+    return _transactions.run(() async {
+      final all = await _listChapters();
+      all.removeWhere((c) => c.id == id);
+      await _writeList('chapters.json', all.map((c) => c.toJson()).toList());
+
+      // Hold the same transaction through the cross-file cascade.
+      final checkpoints = await _listCheckpoints();
+      final remaining = checkpoints.where((c) => c.chapterId != id).toList();
+      await _writeList(
+        'checkpoints.json',
+        remaining.map((c) => c.toJson()).toList(),
+      );
+    });
   }
 
   // ── 记忆 CRUD ─────────────────────────────────────────────────────
 
-  Future<List<Memory>> listMemories() async {
-    final raw = await _readList('memories.json');
-    return raw.map(Memory.fromJson).toList()
+  Future<List<Memory>> _listMemories() async {
+    return await _readModels('memories.json', Memory.fromJson)
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
-  Future<void> saveMemory(Memory m) async {
-    final all = await listMemories();
-    final idx = all.indexWhere((x) => x.id == m.id);
-    if (idx >= 0) all[idx] = m; else all.insert(0, m);
-    await _writeList('memories.json', all.map((x) => x.toJson()).toList());
+  Future<List<Memory>> listMemories() {
+    return _transactions.run(_listMemories);
   }
 
-  Future<void> deleteMemory(String id) async {
-    final all = await listMemories();
-    all.removeWhere((m) => m.id == id);
-    await _writeList('memories.json', all.map((m) => m.toJson()).toList());
+  Future<void> saveMemory(Memory memory) {
+    return _transactions.run(() async {
+      final all = await _listMemories();
+      final idx = all.indexWhere((item) => item.id == memory.id);
+      if (idx >= 0) {
+        all[idx] = memory;
+      } else {
+        all.insert(0, memory);
+      }
+      await _writeList(
+        'memories.json',
+        all.map((item) => item.toJson()).toList(),
+      );
+    });
+  }
+
+  Future<void> deleteMemory(String id) {
+    return _transactions.run(() async {
+      final all = await _listMemories();
+      all.removeWhere((memory) => memory.id == id);
+      await _writeList(
+        'memories.json',
+        all.map((memory) => memory.toJson()).toList(),
+      );
+    });
   }
 
   // ── 快照 CRUD ─────────────────────────────────────────────────────
 
-  Future<List<Checkpoint>> listCheckpoints() async {
-    final raw = await _readList('checkpoints.json');
-    return raw.map(Checkpoint.fromJson).toList()
+  Future<List<Checkpoint>> _listCheckpoints() async {
+    return await _readModels('checkpoints.json', Checkpoint.fromJson)
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
-  Future<Checkpoint> createCheckpoint(Chapter ch, String message) async {
-    final cp = Checkpoint(
-      id: 'cp_${DateTime.now().millisecondsSinceEpoch}',
-      chapterId: ch.id, chapterTitle: ch.title,
-      content: ch.content, message: message,
-      createdAt: DateTime.now(),
-    );
-    final all = await listCheckpoints();
-    all.insert(0, cp);
-    await _writeList('checkpoints.json', all.map((c) => c.toJson()).toList());
-    return cp;
+  Future<List<Checkpoint>> listCheckpoints() {
+    return _transactions.run(_listCheckpoints);
   }
 
-  Future<void> restoreCheckpoint(Checkpoint cp) async {
-    final chapters = await listChapters();
-    final idx = chapters.indexWhere((c) => c.id == cp.chapterId);
-    if (idx < 0) return;
-    chapters[idx]
-      ..content = cp.content
-      ..updatedAt = DateTime.now();
-    await _writeList('chapters.json', chapters.map((c) => c.toJson()).toList());
+  Future<Checkpoint> createCheckpoint(Chapter chapter, String message) {
+    return _transactions.run(() async {
+      final checkpoint = Checkpoint(
+        id: _nextLocalId('cp'),
+        chapterId: chapter.id,
+        chapterTitle: chapter.title,
+        content: chapter.content,
+        message: message,
+        createdAt: DateTime.now(),
+      );
+      final all = await _listCheckpoints();
+      all.insert(0, checkpoint);
+      await _writeList(
+        'checkpoints.json',
+        all.map((item) => item.toJson()).toList(),
+      );
+      return checkpoint;
+    });
   }
 
-  Future<void> deleteCheckpoint(String id) async {
-    final all = await listCheckpoints();
-    all.removeWhere((c) => c.id == id);
-    await _writeList('checkpoints.json', all.map((c) => c.toJson()).toList());
+  Future<void> restoreCheckpoint(Checkpoint checkpoint) {
+    return _transactions.run(() async {
+      final chapters = await _listChapters();
+      final idx = chapters.indexWhere(
+        (item) => item.id == checkpoint.chapterId,
+      );
+      if (idx < 0) return;
+      chapters[idx]
+        ..content = checkpoint.content
+        ..updatedAt = DateTime.now();
+      await _writeList(
+        'chapters.json',
+        chapters.map((item) => item.toJson()).toList(),
+      );
+    });
+  }
+
+  Future<void> deleteCheckpoint(String id) {
+    return _transactions.run(() async {
+      final all = await _listCheckpoints();
+      all.removeWhere((checkpoint) => checkpoint.id == id);
+      await _writeList(
+        'checkpoints.json',
+        all.map((checkpoint) => checkpoint.toJson()).toList(),
+      );
+    });
   }
 
   // ── AI 供应商设置 ─────────────────────────────────────────────────
 
-  Future<AiProvider?> loadProvider() async {
-    final prefs = await SharedPreferences.getInstance();
-    final json = prefs.getString('ai_provider');
-    if (json == null) return null;
-    try {
-      return AiProvider.fromJson(jsonDecode(json) as Map<String, dynamic>);
-    } catch (_) { return null; }
+  Future<AiProvider?> loadProvider() {
+    return _transactions.run(_providerConfig.load);
   }
 
-  Future<void> saveProvider(AiProvider p) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('ai_provider', jsonEncode(p.toJson()));
+  Future<void> saveProvider(AiProvider provider) {
+    return _transactions.run(() => _providerConfig.save(provider));
   }
 
   // ── 历史会话 CRUD ─────────────────────────────────────────────────
 
-  Future<List<ConversationRecord>> listConversations() async {
-    final raw = await _readList('conversations.json');
-    return raw.map(ConversationRecord.fromJson).toList()
+  Future<List<ConversationRecord>> _listConversations() async {
+    return await _readModels('conversations.json', ConversationRecord.fromJson)
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
 
-  Future<void> saveConversation(ConversationRecord conv) async {
-    final all = await listConversations();
-    conv.updatedAt = DateTime.now();
-    final idx = all.indexWhere((c) => c.id == conv.id);
-    if (idx >= 0) all[idx] = conv; else all.insert(0, conv);
-    // 最多保留 100 条
-    final trimmed = all.take(100).toList();
-    await _writeList('conversations.json',
-        trimmed.map((c) => c.toJson()).toList());
+  Future<List<ConversationRecord>> listConversations() {
+    return _transactions.run(_listConversations);
   }
 
-  Future<void> deleteConversation(String id) async {
-    final all = await listConversations();
-    all.removeWhere((c) => c.id == id);
-    await _writeList('conversations.json',
-        all.map((c) => c.toJson()).toList());
+  Future<void> saveConversation(ConversationRecord conversation) {
+    return _transactions.run(() async {
+      final all = await _listConversations();
+      conversation.updatedAt = DateTime.now();
+      final idx = all.indexWhere((item) => item.id == conversation.id);
+      if (idx >= 0) {
+        all[idx] = conversation;
+      } else {
+        all.insert(0, conversation);
+      }
+      final trimmed = all.take(100).toList();
+      await _writeList(
+        'conversations.json',
+        trimmed.map((item) => item.toJson()).toList(),
+      );
+    });
+  }
+
+  Future<void> deleteConversation(String id) {
+    return _transactions.run(() async {
+      final all = await _listConversations();
+      all.removeWhere((conversation) => conversation.id == id);
+      await _writeList(
+        'conversations.json',
+        all.map((conversation) => conversation.toJson()).toList(),
+      );
+    });
   }
 }
 
@@ -296,7 +561,8 @@ class ConversationMessage {
       ConversationMessage(
         role: j['role'] as String? ?? 'user',
         content: j['content'] as String? ?? '',
-        timestamp: DateTime.tryParse(j['timestamp'] as String? ?? '') ??
+        timestamp:
+            DateTime.tryParse(j['timestamp'] as String? ?? '') ??
             DateTime.now(),
       );
 }
@@ -325,7 +591,10 @@ class ConversationRecord {
     final first = msgs.firstWhere(
       (m) => m.role == 'user' && m.content.isNotEmpty,
       orElse: () => ConversationMessage(
-        role: 'user', content: '新对话', timestamp: DateTime.now()),
+        role: 'user',
+        content: '新对话',
+        timestamp: DateTime.now(),
+      ),
     );
     final text = first.content.replaceAll('\n', ' ').trim();
     return text.length > 18 ? '${text.substring(0, 18)}…' : text;
@@ -336,7 +605,10 @@ class ConversationRecord {
     final last = messages.lastWhere(
       (m) => m.role == 'assistant' && m.content.isNotEmpty,
       orElse: () => ConversationMessage(
-        role: 'assistant', content: '', timestamp: DateTime.now()),
+        role: 'assistant',
+        content: '',
+        timestamp: DateTime.now(),
+      ),
     );
     final text = last.content.replaceAll('\n', ' ').trim();
     return text.length > 40 ? '${text.substring(0, 40)}…' : text;
@@ -354,8 +626,7 @@ class ConversationRecord {
 
   factory ConversationRecord.fromJson(Map<String, dynamic> j) {
     final msgs = (j['messages'] as List? ?? [])
-        .map((e) =>
-            ConversationMessage.fromJson(e as Map<String, dynamic>))
+        .map((e) => ConversationMessage.fromJson(e as Map<String, dynamic>))
         .toList();
     return ConversationRecord(
       id: j['id'] as String? ?? '',
@@ -376,7 +647,7 @@ class ConversationRecord {
   }) {
     final now = DateTime.now();
     return ConversationRecord(
-      id: 'conv_${now.millisecondsSinceEpoch}',
+      id: _nextLocalId('conv'),
       title: '新对话',
       messages: [],
       createdAt: now,

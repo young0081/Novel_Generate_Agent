@@ -33,7 +33,7 @@ use na_tools::{ToolContext, ToolRegistry};
 
 use crate::context::ContextManager;
 use crate::injection::PromptInjectionGuard;
-use crate::loop_hooks::LoopHookRegistry;
+use crate::loop_hooks::{LoopHookRegistry, ToolExecutionOutcome};
 use crate::message::{Message, ToolCallRequest, ToolResultRef};
 use crate::model::{ModelProvider, Protocol};
 use crate::orchestrator::{AgentAction, Orchestrator};
@@ -129,6 +129,11 @@ impl LoopGuard {
     /// Steps taken so far.
     pub fn steps(&self) -> u32 {
         self.steps
+    }
+
+    fn remaining_wall_time(&self) -> std::time::Duration {
+        let elapsed = now_millis().saturating_sub(self.start_ms);
+        std::time::Duration::from_millis(self.max_wall_ms.saturating_sub(elapsed))
     }
 
     /// Check the pre-step guards (called at the *top* of each iteration). Returns
@@ -409,12 +414,21 @@ impl GoalLoop {
             let on_delta = move |delta: &str| {
                 hooks.fire_model_delta(step_no, delta);
             };
-            let response = match model.complete_streaming(request, &on_delta).await {
-                Ok(r) => r,
-                Err(e) => {
-                    // A model error ends the run as an internal loop_guard-style
-                    // failure surfaced to the caller.
-                    return Err(e.with_context("model.complete failed in agent loop"));
+            let response = tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => break StoppedReason::Cancelled,
+                _ = tokio::time::sleep(guard.remaining_wall_time()) => {
+                    break StoppedReason::Budget;
+                }
+                result = model.complete_streaming(request, &on_delta) => {
+                    match result {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // A model error ends the run as an internal loop_guard-style
+                            // failure surfaced to the caller.
+                            return Err(e.with_context("model.complete failed in agent loop"));
+                        }
+                    }
                 }
             };
 
@@ -489,17 +503,46 @@ impl GoalLoop {
                         session.push(Message::assistant_tool_call(thought.clone(), call.clone()));
                     }
 
-                    // 8. Execute the batch (reads concurrent, writes serial),
-                    //    honoring cancellation/timeouts via the registry.
-                    let results = scheduler.run_batch(&calls, registry, ctx).await;
+                    // 8. Execute the batch (reads concurrent, writes serial).
+                    //    The scheduler owns per-call cancellation so lifecycle
+                    //    observers receive a terminal event for cancelled calls.
+                    let step_no = guard.steps();
+                    let batch_started_ms = now_millis();
+                    for call in &calls {
+                        self.loop_hooks.fire_tool_start(step_no, call);
+                    }
+                    let results = match tokio::time::timeout(
+                        guard.remaining_wall_time(),
+                        scheduler.run_batch(&calls, registry, ctx),
+                    )
+                    .await
+                    {
+                        Ok(results) => results,
+                        Err(_) => {
+                            let elapsed = now_millis().saturating_sub(batch_started_ms);
+                            let outcome =
+                                ToolExecutionOutcome::interrupted(elapsed, "budget_exceeded");
+                            for call in &calls {
+                                self.loop_hooks.fire_tool_finish(step_no, call, &outcome);
+                            }
+                            break StoppedReason::Budget;
+                        }
+                    };
 
                     // 9. Append observations, sanitizing untrusted content.
                     let mut any_ok = false;
                     let mut any_cancelled = false;
                     for call in &calls {
                         let Some(result) = results.get(&call.id) else {
+                            let elapsed = now_millis().saturating_sub(batch_started_ms);
+                            let outcome =
+                                ToolExecutionOutcome::interrupted(elapsed, "missing_result");
+                            self.loop_hooks.fire_tool_finish(step_no, call, &outcome);
                             continue;
                         };
+                        let lifecycle_outcome = ToolExecutionOutcome::from_result(result);
+                        self.loop_hooks
+                            .fire_tool_finish(step_no, call, &lifecycle_outcome);
                         if result.data.get("code").and_then(|c| c.as_str()) == Some("cancelled") {
                             any_cancelled = true;
                         }
@@ -560,7 +603,7 @@ pub fn loop_guard_error(reason: StoppedReason, steps: u32) -> CoreError {
 mod tests {
     use super::*;
     use crate::message::ToolCallRequest;
-    use crate::model::{CompletionResponse, MockProvider};
+    use crate::model::{CompletionRequest, CompletionResponse, MockProvider};
     use na_common::{json, CancellationToken};
     use na_tools::Result as TResult;
     use na_tools::{
@@ -625,6 +668,35 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                 Ok(ToolResult::success("done", json!({})))
             })
+        }
+    }
+
+    struct BlockingProvider {
+        started: Arc<tokio::sync::Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl ModelProvider for BlockingProvider {
+        fn complete<'a>(
+            &'a self,
+            _request: CompletionRequest,
+        ) -> BoxFuture<'a, Result<CompletionResponse>> {
+            struct DropSignal(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for DropSignal {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+
+            Box::pin(async move {
+                let _drop_signal = DropSignal(Arc::clone(&self.dropped));
+                self.started.notify_one();
+                std::future::pending::<Result<CompletionResponse>>().await
+            })
+        }
+
+        fn name(&self) -> &str {
+            "blocking-test"
         }
     }
 
@@ -759,15 +831,24 @@ mod tests {
     #[tokio::test]
     async fn cancellation_mid_loop_stops() {
         // The provider asks for a slow tool; we cancel while it runs.
-        let provider = MockProvider::from_fn(|_req| {
-            CompletionResponse::tool_call(ToolCallRequest::new("slow", json!({})))
-        });
+        let provider = MockProvider::from_responses(vec![CompletionResponse::tool_call(
+            ToolCallRequest::with_id(
+                na_common::ToolCallId::from_existing("call_cancelled"),
+                "slow",
+                json!({}),
+            ),
+        )]);
         let reg = registry_with(SlowTool);
         let cancel = CancellationToken::new();
         let c = ctx("cancel", cancel.clone());
         let mut session = Session::new("cancel");
 
-        let loopy = GoalLoop::with_protocol(Protocol::NativeToolCall).max_steps(50);
+        let recorder = crate::loop_hooks::RecordingLoopHook::new();
+        let mut hooks = crate::loop_hooks::LoopHookRegistry::new();
+        hooks.register(Arc::new(recorder.clone()));
+        let loopy = GoalLoop::with_protocol(Protocol::NativeToolCall)
+            .max_steps(50)
+            .loop_hooks(Arc::new(hooks));
 
         let canceller = {
             let cancel = cancel.clone();
@@ -787,6 +868,19 @@ mod tests {
         canceller.await.unwrap();
 
         assert_eq!(outcome.stopped_reason, StoppedReason::Cancelled);
+        let events = recorder.events();
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::loop_hooks::LoopEvent::ToolFinish { id, outcome, .. }
+                        if id == "call_cancelled"
+                            && !outcome.ok
+                            && outcome.error.as_deref() == Some("cancelled")
+                )
+            }),
+            "events: {events:?}"
+        );
     }
 
     #[tokio::test]
@@ -804,6 +898,111 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.stopped_reason, StoppedReason::Cancelled);
         assert_eq!(outcome.steps, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_in_flight_model_request() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider = BlockingProvider {
+            started: Arc::clone(&started),
+            dropped: Arc::clone(&dropped),
+        };
+        let cancel = CancellationToken::new();
+        let c = ctx("cancel-model", cancel.clone());
+        let mut session = Session::new("cancel-model");
+        let reg = registry_with(NoteTool);
+
+        let canceller = tokio::spawn(async move {
+            started.notified().await;
+            cancel.cancel();
+        });
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            GoalLoop::with_protocol(Protocol::NativeToolCall).run(
+                "wait for model",
+                &mut session,
+                &provider,
+                &reg,
+                &c,
+            ),
+        )
+        .await
+        .expect("model request did not stop promptly after cancellation")
+        .unwrap();
+        canceller.await.unwrap();
+
+        assert_eq!(outcome.stopped_reason, StoppedReason::Cancelled);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn wall_budget_interrupts_in_flight_model_request() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider = BlockingProvider {
+            started: Arc::clone(&started),
+            dropped: Arc::clone(&dropped),
+        };
+        let c = ctx("budget-model", CancellationToken::new());
+        let mut session = Session::new("budget-model");
+        let reg = registry_with(NoteTool);
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            GoalLoop::with_protocol(Protocol::NativeToolCall)
+                .max_wall_ms(200)
+                .run("wait for model", &mut session, &provider, &reg, &c),
+        )
+        .await
+        .expect("model request exceeded the loop wall budget")
+        .unwrap();
+
+        assert_eq!(outcome.stopped_reason, StoppedReason::Budget);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn wall_budget_interrupts_in_flight_tool() {
+        let provider = MockProvider::from_responses(vec![CompletionResponse::tool_call(
+            ToolCallRequest::with_id(
+                na_common::ToolCallId::from_existing("call_budget"),
+                "slow",
+                json!({}),
+            ),
+        )]);
+        let c = ctx("budget-tool", CancellationToken::new());
+        let mut session = Session::new("budget-tool");
+        let reg = registry_with(SlowTool);
+        let recorder = crate::loop_hooks::RecordingLoopHook::new();
+        let mut hooks = crate::loop_hooks::LoopHookRegistry::new();
+        hooks.register(Arc::new(recorder.clone()));
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            GoalLoop::with_protocol(Protocol::NativeToolCall)
+                .max_wall_ms(200)
+                .loop_hooks(Arc::new(hooks))
+                .run("run slow tool", &mut session, &provider, &reg, &c),
+        )
+        .await
+        .expect("tool request exceeded the loop wall budget")
+        .unwrap();
+
+        assert_eq!(outcome.stopped_reason, StoppedReason::Budget);
+        let events = recorder.events();
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::loop_hooks::LoopEvent::ToolFinish { id, outcome, .. }
+                        if id == "call_budget"
+                            && !outcome.ok
+                            && outcome.error.as_deref() == Some("budget_exceeded")
+                )
+            }),
+            "events: {events:?}"
+        );
     }
 
     // ---- no-progress guard ----
@@ -857,9 +1056,8 @@ mod tests {
     #[tokio::test]
     async fn malformed_react_treated_as_final_lenient() {
         // Lenient mode: plain text without ReAct markers is accepted as Final Answer
-        let provider = MockProvider::from_responses(vec![
-            CompletionResponse::react("garbage with no labels"),
-        ]);
+        let provider =
+            MockProvider::from_responses(vec![CompletionResponse::react("garbage with no labels")]);
         let reg = registry_with(NoteTool);
         let c = ctx("lenient", CancellationToken::new());
         let mut session = Session::new("lenient");
@@ -1004,7 +1202,11 @@ mod tests {
 
         // Two steps: a tool call, then a final answer.
         let provider = MockProvider::from_responses(vec![
-            CompletionResponse::tool_call(ToolCallRequest::new("note", json!({ "text": "hi" }))),
+            CompletionResponse::tool_call(ToolCallRequest::with_id(
+                na_common::ToolCallId::from_existing("call_hook_lifecycle"),
+                "note",
+                json!({ "text": "hi" }),
+            )),
             CompletionResponse::answer("完成。"),
         ]);
         let reg = registry_with(NoteTool);
@@ -1035,6 +1237,31 @@ mod tests {
             .filter(|e| matches!(e, LoopEvent::ModelResponse { .. }))
             .count();
         assert_eq!(model_responses, 2);
+        let tool_start = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    LoopEvent::ToolStart { step: 1, id, name }
+                        if id == "call_hook_lifecycle" && name == "note"
+                )
+            })
+            .expect("tool start event");
+        let tool_finish = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    LoopEvent::ToolFinish { step: 1, id, name, outcome }
+                        if id == "call_hook_lifecycle"
+                            && name == "note"
+                            && outcome.ok
+                            && outcome.summary.as_deref() == Some("completed")
+                            && outcome.error.is_none()
+                )
+            })
+            .expect("tool finish event");
+        assert!(tool_start < tool_finish);
         // The finish outcome matches and is recorded last.
         assert_eq!(
             recorder.finish_outcome().unwrap().stopped_reason,

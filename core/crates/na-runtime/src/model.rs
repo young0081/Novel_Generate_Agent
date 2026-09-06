@@ -54,6 +54,23 @@ pub enum FinishReason {
     Length,
 }
 
+/// Provider-reported token accounting for one completion.
+///
+/// Gemini returns these values in `usageMetadata`, including the number of
+/// prompt tokens served from context cache. All fields are optional because
+/// compatible endpoints frequently omit usage data (especially in streams).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_token_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_token_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_token_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_content_token_count: Option<u32>,
+}
+
 /// Sampling parameters for model generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SamplingParams {
@@ -74,8 +91,12 @@ pub struct SamplingParams {
     pub frequency_penalty: f32,
 }
 
-fn default_temperature() -> f32 { 1.0 }
-fn default_top_p() -> f32 { 1.0 }
+fn default_temperature() -> f32 {
+    1.0
+}
+fn default_top_p() -> f32 {
+    1.0
+}
 
 impl Default for SamplingParams {
     fn default() -> Self {
@@ -140,6 +161,9 @@ pub struct CompletionResponse {
     pub tool_calls: Vec<ToolCallRequest>,
     /// Why the completion stopped.
     pub finish: FinishReason,
+    /// Optional provider usage data (currently populated for Gemini).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageMetadata>,
 }
 
 impl CompletionResponse {
@@ -149,6 +173,7 @@ impl CompletionResponse {
             text: text.into(),
             tool_calls: Vec::new(),
             finish: FinishReason::Stop,
+            usage: None,
         }
     }
 
@@ -158,6 +183,7 @@ impl CompletionResponse {
             text: String::new(),
             tool_calls: vec![call],
             finish: FinishReason::ToolUse,
+            usage: None,
         }
     }
 
@@ -167,6 +193,7 @@ impl CompletionResponse {
             text: String::new(),
             tool_calls: calls,
             finish: FinishReason::ToolUse,
+            usage: None,
         }
     }
 
@@ -178,6 +205,7 @@ impl CompletionResponse {
             text: text.into(),
             tool_calls: Vec::new(),
             finish: FinishReason::ToolUse,
+            usage: None,
         }
     }
 

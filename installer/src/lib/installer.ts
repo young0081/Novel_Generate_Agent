@@ -18,6 +18,7 @@ export type InstallReport = {
   shortcuts: number;
   shortcut_errors: string[];
   uninstaller: boolean;
+  uninstaller_error?: string | null;
 };
 
 function isTauri(): boolean {
@@ -29,8 +30,8 @@ function isTauri(): boolean {
 
 // Fallback values used only for the in-browser dev preview (no Tauri backend).
 const BROWSER_FALLBACK_DIR =
-  "C:\\Users\\You\\AppData\\Local\\Programs\\NovelGenerateTeam";
-const BROWSER_FALLBACK_VERSION = "0.3.0";
+  "C:\\Users\\You\\AppData\\Local\\Programs\\NovelGenerateAgent";
+const BROWSER_FALLBACK_VERSION = "0.3.2";
 
 export async function detectExisting(): Promise<DetectResult> {
   if (!isTauri()) {
@@ -60,7 +61,12 @@ export async function install(
   if (!isTauri()) {
     // Simulated install for browser preview so the UI is fully testable.
     await simulateInstall(onProgress);
-    return { shortcuts: 2, shortcut_errors: [], uninstaller: true };
+    return {
+      shortcuts: 2,
+      shortcut_errors: [],
+      uninstaller: true,
+      uninstaller_error: null,
+    };
   }
 
   const { listen } = await import("@tauri-apps/api/event");

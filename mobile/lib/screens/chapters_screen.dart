@@ -15,6 +15,10 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
   List<Chapter> _chapters = [];
   bool _loading = true;
   String? _error;
+  bool _manageMode = false;
+  bool _batchDeleting = false;
+  int _batchProgress = 0;
+  final Set<String> _selectedIds = <String>{};
 
   @override
   void initState() {
@@ -23,9 +27,14 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
   }
 
   Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       _chapters = await LocalStorage.instance.listChapters();
+      final valid = _chapters.map((chapter) => chapter.id).toSet();
+      _selectedIds.removeWhere((id) => !valid.contains(id));
     } catch (e) {
       _error = '$e';
     } finally {
@@ -39,8 +48,10 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: InkPalette.paperHi,
-        title: const Text('新建章节',
-          style: TextStyle(fontSize: 16, color: InkPalette.ink)),
+        title: const Text(
+          '新建章节',
+          style: TextStyle(fontSize: 16, color: InkPalette.ink),
+        ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -49,10 +60,12 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消')),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
-            child: const Text('创建')),
+            child: const Text('创建'),
+          ),
         ],
       ),
     );
@@ -73,29 +86,132 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
   }
 
   Future<void> _delete(Chapter ch) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: InkPalette.paperHi,
-        title: const Text('删除章节',
-          style: TextStyle(fontSize: 16, color: InkPalette.ink)),
-        content: Text('确认删除「${ch.title}」？同时删除该章节的所有快照，操作不可撤销。',
-          style: const TextStyle(fontSize: 13.5, height: 1.5,
-            color: InkPalette.ink3)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消')),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: TextButton.styleFrom(foregroundColor: InkPalette.cinnabar),
-            child: const Text('删除')),
-        ],
-      ),
-    ) ?? false;
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: InkPalette.paperHi,
+            title: const Text(
+              '删除章节',
+              style: TextStyle(fontSize: 16, color: InkPalette.ink),
+            ),
+            content: Text(
+              '确认删除「${ch.title}」？同时删除该章节的所有快照，操作不可撤销。',
+              style: const TextStyle(
+                fontSize: 13.5,
+                height: 1.5,
+                color: InkPalette.ink3,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: TextButton.styleFrom(
+                  foregroundColor: InkPalette.cinnabar,
+                ),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
     if (!ok) return;
     await LocalStorage.instance.deleteChapter(ch.id);
     await _load();
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _toggleAll() {
+    final ids = _chapters.map((chapter) => chapter.id).toSet();
+    setState(() {
+      if (ids.isNotEmpty && ids.every(_selectedIds.contains)) {
+        _selectedIds.removeAll(ids);
+      } else {
+        _selectedIds.addAll(ids);
+      }
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    final selected = _chapters
+        .where((chapter) => _selectedIds.contains(chapter.id))
+        .toList();
+    if (selected.isEmpty || _batchDeleting) return;
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: InkPalette.paperHi,
+            title: Text(
+              '删除选中的 ${selected.length} 个章节',
+              style: const TextStyle(fontSize: 16, color: InkPalette.ink),
+            ),
+            content: const Text(
+              '同时删除这些章节的所有快照，操作不可撤销。继续？',
+              style: TextStyle(
+                fontSize: 13.5,
+                height: 1.5,
+                color: InkPalette.ink3,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: TextButton.styleFrom(
+                  foregroundColor: InkPalette.cinnabar,
+                ),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+    setState(() {
+      _batchDeleting = true;
+      _batchProgress = 0;
+    });
+    var deleted = 0;
+    var failed = 0;
+    for (final chapter in selected) {
+      try {
+        await LocalStorage.instance.deleteChapter(chapter.id);
+        deleted++;
+      } catch (_) {
+        failed++;
+      }
+      if (mounted) setState(() => _batchProgress++);
+    }
+    await _load();
+    if (!mounted) return;
+    setState(() {
+      _batchDeleting = false;
+      _batchProgress = 0;
+      _selectedIds.removeWhere(
+        (id) => selected.any((chapter) => chapter.id == id),
+      );
+    });
+    showSuccessSnack(
+      context,
+      failed == 0 ? '已删除 $deleted 个章节' : '已删除 $deleted 个，$failed 个失败',
+    );
   }
 
   String _fmt(DateTime dt) {
@@ -113,7 +229,9 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
     if (_loading) {
       return const Center(
         child: CircularProgressIndicator(
-          valueColor: AlwaysStoppedAnimation<Color>(InkPalette.cinnabar)));
+          valueColor: AlwaysStoppedAnimation<Color>(InkPalette.cinnabar),
+        ),
+      );
     }
     if (_error != null) {
       return ErrorState(message: _error!, onRetry: _load);
@@ -126,88 +244,175 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
         foregroundColor: InkPalette.paperHi,
         child: const Icon(Icons.add_rounded),
       ),
-      body: _chapters.isEmpty
-          ? Center(
-              child: EmptyState(
-                icon: Icons.article_outlined,
-                message: '暂无章节',
-                hint: '点击右下角「+」新建，或在「创作」页让 AI 生成后一键保存。',
+      body: Column(
+        children: [
+          if (_chapters.length > 1)
+            Container(
+              color: InkPalette.paperHi,
+              padding: const EdgeInsets.fromLTRB(16, 7, 10, 3),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${_chapters.length} 个章节',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: InkPalette.ink3,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _batchDeleting
+                        ? null
+                        : () => setState(() {
+                            _manageMode = !_manageMode;
+                            _selectedIds.clear();
+                          }),
+                    child: Text(_manageMode ? '完成' : '批量管理'),
+                  ),
+                ],
               ),
-            )
-          : RefreshIndicator(
-              onRefresh: _load,
-              color: InkPalette.cinnabar,
-              child: ListView.separated(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
-                itemCount: _chapters.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemBuilder: (context, i) {
-                  final ch = _chapters[i];
-                  final wordCount = ch.content.replaceAll(RegExp(r'\s'), '').length;
-                  return StaggeredEntrance(
-                    index: i,
-                    child: GestureDetector(
-                      onTap: () => _openEditor(ch),
-                      child: Container(
-                        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-                        decoration: BoxDecoration(
-                          color: InkPalette.paperHi,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: InkPalette.line, width: 0.8)),
-                        child: Row(
-                          children: [
-                            // 序号印章
-                            Container(
-                              width: 32, height: 32,
+            ),
+          if (_manageMode && _chapters.isNotEmpty)
+            BatchActionsBar(
+              selectedCount: _selectedIds.length,
+              totalCount: _chapters.length,
+              allSelected:
+                  _chapters.isNotEmpty &&
+                  _chapters.every((ch) => _selectedIds.contains(ch.id)),
+              busy: _batchDeleting,
+              progress: _batchDeleting ? _batchProgress : null,
+              onToggleAll: _toggleAll,
+              onClear: () => setState(() => _selectedIds.clear()),
+              onDelete: _deleteSelected,
+            ),
+          Expanded(
+            child: _chapters.isEmpty
+                ? Center(
+                    child: EmptyState(
+                      icon: Icons.article_outlined,
+                      message: '暂无章节',
+                      hint: '点击右下角「+」新建，或在「创作」页让 AI 生成后一键保存。',
+                    ),
+                  )
+                : RefreshIndicator(
+                    onRefresh: _load,
+                    color: InkPalette.cinnabar,
+                    child: ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+                      itemCount: _chapters.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (context, i) {
+                        final ch = _chapters[i];
+                        final wordCount = ch.content
+                            .replaceAll(RegExp(r'\s'), '')
+                            .length;
+                        return StaggeredEntrance(
+                          index: i,
+                          child: GestureDetector(
+                            onTap: () => _manageMode
+                                ? _toggleSelected(ch.id)
+                                : _openEditor(ch),
+                            child: Container(
+                              padding: const EdgeInsets.fromLTRB(
+                                14,
+                                12,
+                                10,
+                                12,
+                              ),
                               decoration: BoxDecoration(
-                                color: InkPalette.cinnabarWash,
-                                borderRadius: BorderRadius.circular(8)),
-                              alignment: Alignment.center,
-                              child: Text('${i + 1}',
-                                style: const TextStyle(
-                                  fontSize: 13, fontWeight: FontWeight.w700,
-                                  color: InkPalette.cinnabar)),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                color: InkPalette.paperHi,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: InkPalette.line,
+                                  width: 0.8,
+                                ),
+                              ),
+                              child: Row(
                                 children: [
-                                  Text(ch.title,
-                                    style: const TextStyle(
-                                      fontSize: 14.5, fontWeight: FontWeight.w600,
-                                      color: InkPalette.ink),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis),
-                                  const SizedBox(height: 3),
-                                  Row(
-                                    children: [
-                                      Text('$wordCount 字',
-                                        style: const TextStyle(
-                                          fontSize: 11.5, color: InkPalette.ink4)),
-                                      const SizedBox(width: 10),
-                                      Text(_fmt(ch.updatedAt),
-                                        style: const TextStyle(
-                                          fontSize: 11.5, color: InkPalette.inkGhost)),
-                                    ],
+                                  if (_manageMode)
+                                    Checkbox(
+                                      value: _selectedIds.contains(ch.id),
+                                      onChanged: (_) => _toggleSelected(ch.id),
+                                      activeColor: InkPalette.cinnabar,
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                  // 序号印章
+                                  Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: BoxDecoration(
+                                      color: InkPalette.cinnabarWash,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      '${i + 1}',
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: InkPalette.cinnabar,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          ch.title,
+                                          style: const TextStyle(
+                                            fontSize: 14.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: InkPalette.ink,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Row(
+                                          children: [
+                                            Text(
+                                              '$wordCount 字',
+                                              style: const TextStyle(
+                                                fontSize: 11.5,
+                                                color: InkPalette.ink4,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Text(
+                                              _fmt(ch.updatedAt),
+                                              style: const TextStyle(
+                                                fontSize: 11.5,
+                                                color: InkPalette.inkGhost,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline_rounded,
+                                      size: 20,
+                                      color: InkPalette.ink4,
+                                    ),
+                                    onPressed: () => _delete(ch),
                                   ),
                                 ],
                               ),
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline_rounded,
-                                size: 20, color: InkPalette.ink4),
-                              onPressed: () => _delete(ch),
-                            ),
-                          ],
-                        ),
-                      ),
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
-            ),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -248,7 +453,10 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
     await LocalStorage.instance.saveChapter(widget.chapter);
     widget.onSaved();
     if (!mounted) return;
-    setState(() { _dirty = false; _saving = false; });
+    setState(() {
+      _dirty = false;
+      _saving = false;
+    });
     showSuccessSnack(context, '已保存');
   }
 
@@ -258,8 +466,10 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: InkPalette.paperHi,
-        title: const Text('创建快照',
-          style: TextStyle(fontSize: 16, color: InkPalette.ink)),
+        title: const Text(
+          '创建快照',
+          style: TextStyle(fontSize: 16, color: InkPalette.ink),
+        ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -268,10 +478,12 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消')),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
-            child: const Text('确认')),
+            child: const Text('确认'),
+          ),
         ],
       ),
     );
@@ -279,7 +491,9 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
     // 先保存再快照
     if (_dirty) await _save();
     await LocalStorage.instance.createCheckpoint(
-      widget.chapter, msg.isEmpty ? '手动快照' : msg);
+      widget.chapter,
+      msg.isEmpty ? '手动快照' : msg,
+    );
     if (!mounted) return;
     showSuccessSnack(context, '快照已创建');
   }
@@ -293,19 +507,32 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.chapter.title,
-              style: const TextStyle(fontSize: 15.5,
-                fontWeight: FontWeight.w600, color: InkPalette.ink)),
+            Text(
+              widget.chapter.title,
+              style: const TextStyle(
+                fontSize: 15.5,
+                fontWeight: FontWeight.w600,
+                color: InkPalette.ink,
+              ),
+            ),
             if (_dirty)
-              const Text('未保存',
-                style: TextStyle(fontSize: 11,
-                  color: InkPalette.cinnabar, fontWeight: FontWeight.w500)),
+              const Text(
+                '未保存',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: InkPalette.cinnabar,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
           ],
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.camera_alt_outlined,
-              size: 22, color: InkPalette.ink3),
+            icon: const Icon(
+              Icons.camera_alt_outlined,
+              size: 22,
+              color: InkPalette.ink3,
+            ),
             tooltip: '创建快照',
             onPressed: _createCheckpoint,
           ),
@@ -314,21 +541,32 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
             child: FilledButton.icon(
               onPressed: _dirty && !_saving ? _save : null,
               icon: _saving
-                  ? const SizedBox(width: 14, height: 14,
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(InkPalette.paperHi)))
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          InkPalette.paperHi,
+                        ),
+                      ),
+                    )
                   : const Icon(Icons.save_rounded, size: 16),
               label: const Text('保存'),
               style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                textStyle: const TextStyle(fontSize: 13)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                textStyle: const TextStyle(fontSize: 13),
+              ),
             ),
           ),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(0.8),
-          child: Container(height: 0.8, color: InkPalette.line)),
+          child: Container(height: 0.8, color: InkPalette.line),
+        ),
       ),
       body: TextField(
         controller: _ctrl,
@@ -336,8 +574,11 @@ class _ChapterEditorPageState extends State<_ChapterEditorPage> {
         expands: true,
         keyboardType: TextInputType.multiline,
         style: const TextStyle(
-          fontSize: 15, color: InkPalette.ink, height: 1.85,
-          letterSpacing: 0.3),
+          fontSize: 15,
+          color: InkPalette.ink,
+          height: 1.85,
+          letterSpacing: 0.3,
+        ),
         decoration: const InputDecoration(
           contentPadding: EdgeInsets.fromLTRB(20, 20, 20, 20),
           hintText: '在此书写章节内容…',

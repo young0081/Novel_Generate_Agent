@@ -34,8 +34,10 @@ dependencies:
 
   # HTTP — AI API 直连（OpenAI 兼容 / Anthropic）
   http: ^1.2.0
-  # 本地持久化：API Key、设置、记忆、章节元数据
+  # 本地持久化：非敏感设置、记忆、章节元数据
   shared_preferences: ^2.2.0
+  # API Key：iOS Keychain / Android Keystore 加密存储
+  flutter_secure_storage: ^10.3.1
   # 本地文件路径（章节内容、快照存为 JSON 文件）
   path_provider: ^2.1.2
 

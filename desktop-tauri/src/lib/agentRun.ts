@@ -16,14 +16,76 @@ import {
   IconBranch,
   IconTools,
 } from "../components/icons";
-import type { AgentStep, StepToolCall } from "./studio";
+import type { AgentStep, StepToolCall, UsageMetadata } from "./studio";
+
+export type RunToolStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "error"
+  | "cancelled";
+
+export interface RunToolCall extends StepToolCall {
+  status: RunToolStatus;
+  durationMs?: number;
+  summary?: string;
+  error?: string;
+}
 
 /** A single model turn rendered as a card in the live feed. */
 export interface RunStep {
   key: number;
   step: number;
   text: string;
-  toolCalls: StepToolCall[];
+  toolCalls: RunToolCall[];
+  /** The model is currently streaming text into this step. */
+  streaming: boolean;
+  /** Token accounting reported by the provider for this model turn. */
+  usage?: UsageMetadata;
+}
+
+function queuedToolCall(call: StepToolCall): RunToolCall {
+  return { ...call, status: "queued" };
+}
+
+function lifecycleStatus(event: Extract<AgentStep, { phase: "tool_finish" }>): RunToolStatus {
+  if (event.ok) return "success";
+  return event.error === "cancelled" ? "cancelled" : "error";
+}
+
+function updateToolEvent(
+  steps: RunStep[],
+  event: Extract<AgentStep, { phase: "tool_start" | "tool_finish" }>,
+  nextKey: () => number,
+): RunStep[] {
+  const stepIndex = steps.findIndex((step) => step.step === event.step);
+  const current = stepIndex >= 0
+    ? steps[stepIndex]
+    : { key: nextKey(), step: event.step, text: "", toolCalls: [], streaming: false };
+  const toolIndex = current.toolCalls.findIndex((call) => call.id === event.id);
+  const previous = toolIndex >= 0 ? current.toolCalls[toolIndex] : null;
+  const updatedTool: RunToolCall = event.phase === "tool_start"
+    ? {
+        id: event.id,
+        name: event.name,
+        args: previous?.args ?? null,
+        status: "running",
+      }
+    : {
+        id: event.id,
+        name: event.name,
+        args: previous?.args ?? null,
+        status: lifecycleStatus(event),
+        durationMs: event.duration_ms,
+        summary: event.summary ?? undefined,
+        error: event.error ?? undefined,
+      };
+  const toolCalls = toolIndex >= 0
+    ? current.toolCalls.map((call, index) => index === toolIndex ? updatedTool : call)
+    : [...current.toolCalls, updatedTool];
+  const updatedStep = { ...current, toolCalls, streaming: false };
+  if (stepIndex < 0) return [...steps, updatedStep];
+  return steps.map((step, index) => index === stepIndex ? updatedStep : step);
 }
 
 /**
@@ -34,41 +96,118 @@ export type AgentPhase =
   | "idle" // not started / cleared
   | "warming" // started, model not yet responded (唤起模型)
   | "reasoning" // mid-run, last turn was pure thought
+  | "streaming" // the current model turn is arriving token by token
   | "tooling" // mid-run, last turn issued tool calls
+  | "cancelling" // the user requested cancellation; waiting for the run to stop
   | "done" // finished successfully
+  | "cancelled" // stopped by the user
   | "stopped" // finished without success (budget / no-progress / max steps)
   | "error"; // the call threw (e.g. network / provider)
 
 /**
- * Fold a streamed `delta` or final `model` step into the running step list,
+ * Fold lifecycle, streamed `delta`, and final `model` events into the step list,
  * keyed by step number so a step's reasoning grows live as tokens arrive and is
  * then reconciled (authoritative text + tool calls) when the step completes.
- * Non-step events are returned unchanged. `nextKey` mints a fresh React key.
+ * `nextKey` mints a fresh React key.
  */
 export function upsertStep(
   steps: RunStep[],
   s: AgentStep,
   nextKey: () => number,
 ): RunStep[] {
+  if (s.phase === "step") {
+    const stepIndex = steps.findIndex((step) => step.step === s.step);
+    if (stepIndex >= 0) return steps;
+    return [
+      ...steps,
+      { key: nextKey(), step: s.step, text: "", toolCalls: [], streaming: false },
+    ];
+  }
+  if (s.phase === "tool_start" || s.phase === "tool_finish") {
+    return updateToolEvent(steps, s, nextKey);
+  }
+  if (s.phase === "finish") {
+    const fallbackStatus: RunToolStatus = s.success
+      ? "success"
+      : s.reason === "cancelled"
+        ? "cancelled"
+        : "error";
+    return steps.map((step) => ({
+      ...step,
+      streaming: false,
+      toolCalls: step.toolCalls.map((call) => (
+        call.status === "queued" || call.status === "running"
+          ? { ...call, status: fallbackStatus }
+          : call
+      )),
+    }));
+  }
   if (s.phase !== "delta" && s.phase !== "model") return steps;
   const last = steps[steps.length - 1];
   if (last && last.step === s.step) {
     const updated: RunStep =
       s.phase === "delta"
-        ? { ...last, text: last.text + s.delta }
-        : { ...last, text: s.text || last.text, toolCalls: s.tool_calls ?? [] };
+        ? { ...last, text: last.text + s.delta, streaming: true }
+        : {
+            ...last,
+            text: s.text || last.text,
+            streaming: false,
+            usage: s.usage ?? last.usage,
+            toolCalls: (s.tool_calls ?? []).map((call) => {
+              const previous = last.toolCalls.find((item) => item.id === call.id);
+              return previous ? { ...previous, ...call } : queuedToolCall(call);
+            }),
+          };
     return [...steps.slice(0, -1), updated];
   }
   const created: RunStep =
     s.phase === "delta"
-      ? { key: nextKey(), step: s.step, text: s.delta, toolCalls: [] }
+      ? {
+          key: nextKey(),
+          step: s.step,
+          text: s.delta,
+          toolCalls: [],
+          streaming: true,
+        }
       : {
           key: nextKey(),
           step: s.step,
           text: s.text ?? "",
-          toolCalls: s.tool_calls ?? [],
+          toolCalls: (s.tool_calls ?? []).map(queuedToolCall),
+          streaming: false,
+          usage: s.usage ?? undefined,
         };
   return [...steps, created];
+}
+
+/**
+ * Close any tool lifecycle left open when a provider call terminates without a
+ * final tool event. This keeps error/cancellation UI from scanning forever.
+ */
+export function settlePendingTools(
+  steps: RunStep[],
+  status: Extract<RunToolStatus, "success" | "error" | "cancelled">,
+  message?: string,
+): RunStep[] {
+  let changed = false;
+  const settled = steps.map((step) => {
+    if (step.streaming) changed = true;
+    return {
+      ...step,
+      streaming: false,
+      toolCalls: step.toolCalls.map((call) => {
+        if (call.status !== "queued" && call.status !== "running") return call;
+        changed = true;
+        return {
+          ...call,
+          status,
+          ...(status === "error" && message && !call.error ? { error: message } : {}),
+          ...(status !== "success" && message && !call.summary ? { summary: message } : {}),
+        };
+      }),
+    };
+  });
+  return changed ? settled : steps;
 }
 
 /** Derive the work phase from the raw run bits the screens already track. */
@@ -78,15 +217,36 @@ export function derivePhase(o: {
   finished: boolean;
   success: boolean | null;
   errored: boolean;
+  cancelling?: boolean;
+  cancelled?: boolean;
 }): AgentPhase {
   if (o.errored) return "error";
+  if (o.cancelled) return "cancelled";
+  if (o.cancelling) return "cancelling";
   if (o.running) {
     if (o.steps.length === 0) return "warming";
     const last = o.steps[o.steps.length - 1];
-    return last.toolCalls.length > 0 ? "tooling" : "reasoning";
+    if (last.toolCalls.some((call) => call.status === "queued" || call.status === "running")) {
+      return "tooling";
+    }
+    return last.streaming ? "streaming" : "reasoning";
   }
   if (o.finished) return o.success === false ? "stopped" : "done";
   return "idle";
+}
+
+/** Translate backend stop codes into short creator-facing copy. */
+export function stopReasonLabel(reason: string | null | undefined): string {
+  switch (reason) {
+    case "goal_reached": return "任务已完成";
+    case "cancelled": return "已由用户停止";
+    case "max_steps": return "已到本次步骤上限";
+    case "no_progress": return "未检测到可继续的进展";
+    case "repeated_action": return "检测到重复操作";
+    case "budget": return "已到本次用量上限";
+    case "model_stop": return "模型提前结束";
+    default: return "任务未完整完成";
+  }
 }
 
 /** The overall colour/animation tone for a phase. */
@@ -103,8 +263,11 @@ export const PHASE_META: Record<AgentPhase, PhaseMeta> = {
   idle: { label: "待命", tone: "idle", live: false },
   warming: { label: "唤起模型", tone: "warm", live: true },
   reasoning: { label: "运思推理", tone: "reason", live: true },
+  streaming: { label: "正在成文", tone: "reason", live: true },
   tooling: { label: "调用工具", tone: "tool", live: true },
+  cancelling: { label: "正在停止", tone: "warm", live: true },
   done: { label: "已完成", tone: "done", live: false },
+  cancelled: { label: "已取消", tone: "idle", live: false },
   stopped: { label: "已停止", tone: "warn", live: false },
   error: { label: "出错", tone: "warn", live: false },
 };
@@ -123,6 +286,14 @@ export const WRITE_STAGES: WorkflowStageDef[] = [
   { key: "reason", label: "运思" },
   { key: "tool", label: "用器" },
   { key: "final", label: "成章" },
+];
+
+/** Stages for the native Agent conversation: understand → reason → use → reply. */
+export const DISCUSS_STAGES: WorkflowStageDef[] = [
+  { key: "intent", label: "理解" },
+  { key: "reason", label: "运思" },
+  { key: "tool", label: "取用" },
+  { key: "final", label: "回应" },
 ];
 
 /** Stages for a planning/story-bible generation run: 构思 → 推演 → 入库 → 立稿. */
@@ -149,10 +320,10 @@ export const IDE_STAGES: WorkflowStageDef[] = [
   { key: "final", label: "完成" },
 ];
 
-export type WorkflowState = "idle" | "running" | "done" | "stopped" | "error";
+export type WorkflowState = "idle" | "running" | "done" | "cancelled" | "stopped" | "error";
 
 /** Map a phase to the active stage index + the tracker's overall state. */
-export function workflowView(phase: AgentPhase): {
+export function workflowView(phase: AgentPhase, reachedStage = 0): {
   current: number;
   state: WorkflowState;
 } {
@@ -163,15 +334,27 @@ export function workflowView(phase: AgentPhase): {
       return { current: 0, state: "running" };
     case "reasoning":
       return { current: 1, state: "running" };
+    case "streaming":
+      return { current: 1, state: "running" };
     case "tooling":
       return { current: 2, state: "running" };
+    case "cancelling":
+      return { current: reachedStage, state: "running" };
     case "done":
       return { current: 3, state: "done" };
+    case "cancelled":
+      return { current: reachedStage, state: "cancelled" };
     case "stopped":
-      return { current: 3, state: "stopped" };
+      return { current: reachedStage, state: "stopped" };
     case "error":
-      return { current: 3, state: "error" };
+      return { current: reachedStage, state: "error" };
   }
+}
+
+/** The furthest macro stage supported by events received so far. */
+export function reachedWorkflowStage(steps: RunStep[]): number {
+  if (steps.length === 0) return 0;
+  return steps[steps.length - 1].toolCalls.length > 0 ? 2 : 1;
 }
 
 // ---- tool-call presentation -------------------------------------------------
@@ -202,14 +385,34 @@ export function previewArgs(args: unknown): string | null {
     "branch",
   ];
   for (const k of PRIORITY) {
+    if (isSensitiveArgKey(k)) continue;
     const v = obj[k];
     if (typeof v === "string" && v.trim()) return `${k}: ${clip(v)}`;
   }
   for (const [k, v] of Object.entries(obj)) {
+    if (isSensitiveArgKey(k)) continue;
     if (typeof v === "string" && v.trim()) return `${k}: ${clip(v)}`;
     if (typeof v === "number" || typeof v === "boolean") return `${k}: ${String(v)}`;
   }
   return null;
+}
+
+const SENSITIVE_ARG_KEY = /(?:api[-_]?key|authorization|bearer|cookie|password|secret|token)/i;
+
+function isSensitiveArgKey(key: string): boolean {
+  return SENSITIVE_ARG_KEY.test(key);
+}
+
+function redactArgs(value: unknown, depth = 0): unknown {
+  if (depth > 6) return "[内容过深]";
+  if (Array.isArray(value)) return value.map((item) => redactArgs(item, depth + 1));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      isSensitiveArgKey(key) ? "[已隐藏]" : redactArgs(item, depth + 1),
+    ]),
+  );
 }
 
 /** Pretty-print tool args for the expandable detail view. */
@@ -217,7 +420,7 @@ export function formatArgs(args: unknown): string {
   if (args == null) return "（无参数）";
   if (typeof args === "string") return args;
   try {
-    return JSON.stringify(args, null, 2);
+    return JSON.stringify(redactArgs(args), null, 2);
   } catch {
     return String(args);
   }

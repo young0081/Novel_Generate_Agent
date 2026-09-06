@@ -23,6 +23,7 @@ import {
 } from "../components/icons";
 import { invokeTool, describeError } from "../lib/core";
 import { useToast } from "../components/Toast";
+import "../styles/legacy.css";
 
 // ---- loosely-typed views over the tool `data` payloads ----
 interface CommitData {
@@ -37,6 +38,7 @@ interface LogEntry {
   author?: string;
   time?: string | number;
   created_ms?: number;
+  ts?: number;
   word_delta?: number;
   words?: number;
   total_words?: number;
@@ -388,17 +390,18 @@ export default function CollabScreen() {
   );
 
   return (
-    <Panel
+    <div className="legacy-scope legacy-screen">
+      <Panel
       title="协作"
       en="Collaboration"
-      subtitle="版本溯流 · 提交 / 分支 / 对比 / 回滚，支持团队异步共笔"
+      subtitle="版本溯流 · 提交 / 分支 / 对比 / 回滚"
       actions={headerActions}
     >
       <div className="scroll-area">
         {/* team note */}
         <div className="banner banner--info" style={{ margin: "0 0 18px" }}>
           <IconUsers size={16} />
-          团队可让多台客户端连到同一个后端 / 工作区，各自落笔、提交与切换分支，异步协作、互不打断。
+          提交当前书稿或创建分支来保留不同创作方案；版本数据保存在当前作品的本机工作区。
         </div>
 
         <div className="collab-grid">
@@ -606,7 +609,7 @@ export default function CollabScreen() {
             <div className="timeline">
               {ordered.map((c, i) => {
                 const delta = fmtDelta(c.word_delta);
-                const when = fmtWhen(c.time ?? c.created_ms);
+                const when = fmtWhen(c.ts ?? c.time ?? c.created_ms);
                 const id = c.id;
                 const isNewest = i === 0;
                 const isDiffed =
@@ -722,6 +725,7 @@ export default function CollabScreen() {
           if (!restoring) setRestoreTarget(null);
         }}
       />
-    </Panel>
+      </Panel>
+    </div>
   );
 }

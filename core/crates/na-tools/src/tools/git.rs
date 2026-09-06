@@ -28,17 +28,17 @@
 //! [`GitRestoreTool`], [`GitBranchTool`]) expose this over the standard tool
 //! protocol; the mutating ones require [`Capability::GitWrite`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 
 use na_common::time::now_millis;
 use na_common::{json, CheckpointId, CoreError, Json, Result};
-use na_memory::content_hash;
-use na_sandbox::Capability;
+use na_memory::{content_hash, read_content_object, validate_content_hash, write_content_object};
+use na_sandbox::{Capability, PathJail};
 use serde::{Deserialize, Serialize};
 
+use super::fs::atomic_write;
 use crate::tool::{BoxFuture, Tool, ToolContext, ToolResult, ToolSpec};
 
 /// The directory (under the workspace root) holding the fiction VCS state.
@@ -231,6 +231,7 @@ impl Default for VcsState {
 /// The pure-Rust fiction version store rooted at a workspace.
 #[derive(Debug)]
 pub struct FictionVcs {
+    jail: PathJail,
     workspace_root: PathBuf,
     vcs_dir: PathBuf,
     objects_dir: PathBuf,
@@ -240,20 +241,30 @@ pub struct FictionVcs {
     state: VcsState,
 }
 
+#[derive(Debug)]
+struct WorkspaceEntry {
+    rel: String,
+    is_dir: bool,
+}
+
 impl FictionVcs {
     /// Open (or initialize) the store under `<workspace_root>/.na-vcs`.
     pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self> {
-        let workspace_root = workspace_root.as_ref().to_path_buf();
+        let jail = PathJail::new(workspace_root)?;
+        let workspace_root = jail.root().to_path_buf();
         let vcs_dir = workspace_root.join(VCS_DIR);
         let objects_dir = vcs_dir.join("objects");
         let commits_path = vcs_dir.join("commits.jsonl");
         let state_path = vcs_dir.join("state.json");
 
-        fs::create_dir_all(&objects_dir)
-            .map_err(|e| CoreError::from(e).with_context("creating .na-vcs/objects"))?;
+        ensure_store_directory(&vcs_dir, ".na-vcs")?;
+        ensure_store_directory(&objects_dir, ".na-vcs/objects")?;
+        ensure_metadata_file_or_missing(&commits_path, ".na-vcs/commits.jsonl")?;
+        ensure_metadata_file_or_missing(&state_path, ".na-vcs/state.json")?;
 
         let commits = load_commits(&commits_path)?;
         let mut state = load_state(&state_path)?;
+        validate_state(&state, &commits)?;
         // Self-heal: ensure every branch referenced by a commit is listed, so a
         // store created before branching gains a coherent `main` branch and any
         // hand-edited log stays consistent.
@@ -267,6 +278,7 @@ impl FictionVcs {
         }
 
         Ok(FictionVcs {
+            jail,
             workspace_root,
             vcs_dir,
             objects_dir,
@@ -284,6 +296,7 @@ impl FictionVcs {
         let root = self.workspace_root.clone();
         self.snapshot_dir(&root, &mut files)?;
         files.sort_by(|a, b| a.path.cmp(&b.path));
+        validate_file_records(&files)?;
 
         let id = CheckpointId::new();
         let commit = Commit {
@@ -392,47 +405,8 @@ impl FictionVcs {
         let commit = &self.commits[idx];
 
         match path {
-            Some(rel) => {
-                let rel = normalize_rel(rel);
-                match commit.files.iter().find(|f| f.path == rel) {
-                    Some(rec) => {
-                        self.write_file_from_blob(&rec.path, &rec.hash)?;
-                        Ok(1)
-                    }
-                    None => {
-                        // File absent in the target commit -> delete it locally.
-                        let abs = self.workspace_root.join(rel_to_pathbuf(&rel));
-                        if abs.exists() {
-                            fs::remove_file(&abs).map_err(|e| {
-                                CoreError::from(e)
-                                    .with_context(format!("deleting {rel} during restore"))
-                            })?;
-                        }
-                        Ok(0)
-                    }
-                }
-            }
-            None => {
-                // Whole-workspace restore.
-                let desired: std::collections::BTreeSet<&str> =
-                    commit.files.iter().map(|f| f.path.as_str()).collect();
-                // Delete extras.
-                let mut existing = Vec::new();
-                self.collect_rel_files(&self.workspace_root, &mut existing)?;
-                for rel in &existing {
-                    if !desired.contains(rel.as_str()) {
-                        let abs = self.workspace_root.join(rel_to_pathbuf(rel));
-                        if abs.exists() {
-                            let _ = fs::remove_file(&abs);
-                        }
-                    }
-                }
-                // Write all.
-                for rec in &commit.files {
-                    self.write_file_from_blob(&rec.path, &rec.hash)?;
-                }
-                Ok(commit.files.len())
-            }
+            Some(path) => self.restore_one(commit, path),
+            None => self.restore_all(commit),
         }
     }
 
@@ -498,9 +472,12 @@ impl FictionVcs {
                 "branch {name:?} already exists"
             )));
         }
-        self.state.branches.push(name.to_string());
-        self.state.current_branch = name.to_string();
-        self.save_state()
+        let mut next = self.state.clone();
+        next.branches.push(name.to_string());
+        next.current_branch = name.to_string();
+        self.persist_state(&next)?;
+        self.state = next;
+        Ok(())
     }
 
     /// Switch the working branch to an existing `name`. Errors if it is unknown.
@@ -509,8 +486,11 @@ impl FictionVcs {
         if !self.state.branches.iter().any(|b| b == name) {
             return Err(CoreError::not_found(format!("no such branch {name:?}")));
         }
-        self.state.current_branch = name.to_string();
-        self.save_state()
+        let mut next = self.state.clone();
+        next.current_branch = name.to_string();
+        self.persist_state(&next)?;
+        self.state = next;
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -565,15 +545,18 @@ impl FictionVcs {
             return Err(CoreError::invalid_input("tag label must not be empty"));
         }
         let _ = self.index_of(rev)?;
-        if let Some(existing) = self.state.tags.iter_mut().find(|t| t.label == label) {
+        let mut next = self.state.clone();
+        if let Some(existing) = next.tags.iter_mut().find(|t| t.label == label) {
             existing.commit = rev.clone();
         } else {
-            self.state.tags.push(Tag {
+            next.tags.push(Tag {
                 label: label.to_string(),
                 commit: rev.clone(),
             });
         }
-        self.save_state()
+        self.persist_state(&next)?;
+        self.state = next;
+        Ok(())
     }
 
     /// All tags, in insertion order.
@@ -601,17 +584,403 @@ impl FictionVcs {
             .ok_or_else(|| CoreError::not_found(format!("commit {id} not found")))
     }
 
-    fn write_file_from_blob(&self, rel: &str, hash: &str) -> Result<()> {
-        let blob = self.read_blob(hash)?;
-        let abs = self.workspace_root.join(rel_to_pathbuf(rel));
-        if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| CoreError::from(e).with_context(format!("creating dirs for {rel}")))?;
+    fn restore_one(&self, commit: &Commit, requested: &str) -> Result<usize> {
+        let rel = self.normalize_restore_path(requested)?;
+        let requested_key = path_comparison_key(&rel);
+        let record = commit
+            .files
+            .iter()
+            .find(|record| path_comparison_key(&record.path) == requested_key);
+        let restored = record.is_some();
+        let desired: Vec<&FileRecord> = record.into_iter().collect();
+        let removals = if record.is_none() {
+            vec![rel.as_str()]
+        } else {
+            Vec::new()
+        };
+        self.apply_restore(&desired, &removals)?;
+        Ok(usize::from(restored))
+    }
+
+    fn restore_all(&self, commit: &Commit) -> Result<usize> {
+        let desired: Vec<&FileRecord> = commit.files.iter().collect();
+        let desired_paths: HashSet<String> = commit
+            .files
+            .iter()
+            .map(|record| path_comparison_key(&record.path))
+            .collect();
+        let entries = self.collect_workspace_entries()?;
+        let removals: Vec<&str> = entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .filter(|entry| !desired_paths.contains(&path_comparison_key(&entry.rel)))
+            .map(|entry| entry.rel.as_str())
+            .collect();
+        self.apply_restore(&desired, &removals)?;
+        Ok(commit.files.len())
+    }
+
+    fn normalize_restore_path(&self, requested: &str) -> Result<String> {
+        let separators_normalized = normalize_user_separators(requested);
+        // Resolve once to reject lexical escapes and links that leave the jail,
+        // but keep the lexical relative path. Using the canonical result here
+        // would silently turn an in-workspace symlink alias into its target.
+        let resolved = self.jail.resolve(&separators_normalized)?;
+        if self
+            .jail
+            .relative(&resolved)
+            .is_some_and(|path| path.split('/').any(is_reserved_path_component))
+        {
+            return Err(CoreError::security(format!(
+                "restore access to internal workspace state is blocked: {requested}"
+            )));
         }
-        fs::write(&abs, &blob).map_err(|e| {
-            CoreError::from(e).with_context(format!("writing {rel} during restore"))
+        let rel = lexical_workspace_relative(
+            &self.jail,
+            &self.workspace_root,
+            Path::new(&separators_normalized),
+        )
+        .ok_or_else(|| {
+            CoreError::sandbox(format!(
+                "restore path is outside the workspace: {requested:?}"
+            ))
+        })?;
+        if rel.is_empty() {
+            return Err(CoreError::invalid_input(
+                "restore path must identify a workspace file",
+            ));
+        }
+        validate_user_restore_path(&rel)?;
+        Ok(rel)
+    }
+
+    fn apply_restore(&self, desired: &[&FileRecord], removals: &[&str]) -> Result<()> {
+        validate_file_record_refs(desired)?;
+
+        // Read every object before creating the transaction or touching the
+        // workspace. Corruption and missing blobs therefore fail cleanly.
+        let mut blobs = Vec::with_capacity(desired.len());
+        for record in desired {
+            blobs.push((record.path.as_str(), self.read_blob(&record.hash)?));
+        }
+
+        // Reject links in any existing destination component, even links that
+        // remain inside the workspace. Restores replace the named path itself;
+        // they never write through a filesystem alias.
+        let mut backup_roots = Vec::new();
+        for record in desired {
+            if let Some(conflict) = self.preflight_destination(&record.path)? {
+                backup_roots.push(conflict);
+            }
+        }
+        for rel in removals {
+            validate_stored_path(rel)?;
+            if self.preflight_removal(rel)? {
+                backup_roots.push((*rel).to_string());
+            }
+        }
+        minimize_restore_roots(&mut backup_roots);
+        for rel in &backup_roots {
+            let path = self.workspace_path(rel);
+            let is_directory = fs::symlink_metadata(&path)
+                .map(|metadata| metadata.is_dir())
+                .map_err(|error| {
+                    CoreError::from(error)
+                        .with_context(format!("inspecting restore backup root {rel}"))
+                })?;
+            if is_directory && self.contains_reserved_descendant(&path)? {
+                return Err(CoreError::security(format!(
+                    "restore would replace protected state below {rel:?}"
+                )));
+            }
+        }
+
+        ensure_store_directory(&self.vcs_dir, ".na-vcs")?;
+        let transaction = self.vcs_dir.join(na_common::next_id("restore-transaction"));
+        fs::create_dir(&transaction).map_err(|error| {
+            CoreError::from(error).with_context("creating VCS restore transaction")
+        })?;
+        let stage = transaction.join("stage");
+        let backup = transaction.join("backup");
+        let setup_result = (|| -> Result<()> {
+            fs::create_dir(&stage).map_err(|error| {
+                CoreError::from(error).with_context("creating VCS restore staging directory")
+            })?;
+            fs::create_dir(&backup).map_err(|error| {
+                CoreError::from(error).with_context("creating VCS restore backup directory")
+            })?;
+            for (rel, blob) in &blobs {
+                let staged = join_stored_path(&stage, rel);
+                if let Some(parent) = staged.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        CoreError::from(error)
+                            .with_context(format!("staging restore directories for {rel}"))
+                    })?;
+                }
+                atomic_write(&staged, blob, rel)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = setup_result {
+            let _ = fs::remove_dir_all(&transaction);
+            return Err(error);
+        }
+
+        let mut moved_backups: Vec<String> = Vec::new();
+        let mut installed: Vec<String> = Vec::new();
+        let mut created_dirs: Vec<PathBuf> = Vec::new();
+        let apply_result = (|| -> Result<()> {
+            for rel in &backup_roots {
+                let source = self.workspace_path(rel);
+                let destination = join_stored_path(&backup, rel);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        CoreError::from(error)
+                            .with_context(format!("creating restore backup directory for {rel}"))
+                    })?;
+                }
+                fs::rename(&source, &destination).map_err(|error| {
+                    CoreError::from(error).with_context(format!("backing up {rel} during restore"))
+                })?;
+                moved_backups.push(rel.clone());
+            }
+
+            for record in desired {
+                self.ensure_destination_parents(&record.path, &mut created_dirs)?;
+                // Recheck after the backups and directory creation so a static
+                // destination link can never be followed during installation.
+                if self.preflight_destination(&record.path)?.is_some() {
+                    return Err(CoreError::conflict(format!(
+                        "restore destination changed while applying {:?}",
+                        record.path
+                    )));
+                }
+                let source = join_stored_path(&stage, &record.path);
+                let destination = self.workspace_path(&record.path);
+                fs::rename(&source, &destination).map_err(|error| {
+                    CoreError::from(error)
+                        .with_context(format!("installing {} during restore", record.path))
+                })?;
+                installed.push(record.path.clone());
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = apply_result {
+            let rollback = self.rollback_restore(
+                &backup,
+                &mut installed,
+                &mut moved_backups,
+                &mut created_dirs,
+            );
+            if rollback.is_ok() {
+                let _ = fs::remove_dir_all(&transaction);
+                return Err(error);
+            }
+            return Err(error.with_context(format!(
+                "restore rollback also failed; preserved recovery data at {}: {}",
+                transaction.display(),
+                rollback.unwrap_err()
+            )));
+        }
+
+        fs::remove_dir_all(&transaction).map_err(|error| {
+            CoreError::from(error).with_context(format!(
+                "removing completed restore transaction {}",
+                transaction.display()
+            ))
         })?;
         Ok(())
+    }
+
+    fn preflight_destination(&self, rel: &str) -> Result<Option<String>> {
+        validate_stored_path(rel)?;
+        let components: Vec<&str> = rel.split('/').collect();
+        let mut current = self.workspace_root.clone();
+        let mut current_rel = String::new();
+        for (index, component) in components.iter().enumerate() {
+            current.push(component);
+            if !current_rel.is_empty() {
+                current_rel.push('/');
+            }
+            current_rel.push_str(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    if metadata.file_type().is_symlink() {
+                        return Err(destination_symlink_error(&current_rel));
+                    }
+                    if index + 1 == components.len() || !metadata.is_dir() {
+                        return Ok(Some(current_rel));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(CoreError::from(error).with_context(format!(
+                        "inspecting restore destination {}",
+                        current.display()
+                    )))
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn preflight_removal(&self, rel: &str) -> Result<bool> {
+        let components: Vec<&str> = rel.split('/').collect();
+        let mut current = self.workspace_root.clone();
+        for (index, component) in components.iter().enumerate() {
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(destination_symlink_error(rel))
+                }
+                Ok(_) if index + 1 == components.len() => return Ok(true),
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => {
+                    return Err(CoreError::from(error)
+                        .with_context(format!("inspecting restore removal {}", current.display())))
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn ensure_destination_parents(&self, rel: &str, created: &mut Vec<PathBuf>) -> Result<()> {
+        let components: Vec<&str> = rel.split('/').collect();
+        let mut current = self.workspace_root.clone();
+        for component in &components[..components.len().saturating_sub(1)] {
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(destination_symlink_error(rel))
+                }
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    return Err(CoreError::conflict(format!(
+                        "non-directory restore ancestor {}",
+                        current.display()
+                    )))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&current).map_err(|error| {
+                        CoreError::from(error).with_context(format!(
+                            "creating restore destination directory {}",
+                            current.display()
+                        ))
+                    })?;
+                    created.push(current.clone());
+                }
+                Err(error) => {
+                    return Err(CoreError::from(error).with_context(format!(
+                        "inspecting restore destination directory {}",
+                        current.display()
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn rollback_restore(
+        &self,
+        backup: &Path,
+        installed: &mut Vec<String>,
+        moved_backups: &mut Vec<String>,
+        created_dirs: &mut Vec<PathBuf>,
+    ) -> Result<()> {
+        let mut errors = Vec::new();
+        while let Some(rel) = installed.pop() {
+            let path = self.workspace_path(&rel);
+            if let Err(error) = fs::remove_file(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    errors.push(format!("removing installed {rel}: {error}"));
+                }
+            }
+        }
+        while let Some(path) = created_dirs.pop() {
+            if let Err(error) = fs::remove_dir(&path) {
+                // ErrorKind::DirectoryNotEmpty is newer than the workspace's
+                // Rust 1.80 MSRV. Confirm the condition from the directory
+                // contents so permission and other I/O failures still surface.
+                let directory_not_empty = fs::read_dir(&path)
+                    .ok()
+                    .and_then(|mut entries| entries.next())
+                    .is_some();
+                if error.kind() != std::io::ErrorKind::NotFound && !directory_not_empty {
+                    errors.push(format!("removing created {}: {error}", path.display()));
+                }
+            }
+        }
+        while let Some(rel) = moved_backups.pop() {
+            let source = join_stored_path(backup, &rel);
+            let destination = self.workspace_path(&rel);
+            if let Some(parent) = destination.parent() {
+                if let Err(error) = fs::create_dir_all(parent) {
+                    errors.push(format!("recreating parent for {rel}: {error}"));
+                    continue;
+                }
+            }
+            if let Err(error) = fs::rename(&source, &destination) {
+                errors.push(format!("restoring backup for {rel}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(CoreError::internal(errors.join("; ")))
+        }
+    }
+
+    fn workspace_path(&self, rel: &str) -> PathBuf {
+        join_stored_path(&self.workspace_root, rel)
+    }
+
+    fn collect_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
+        let mut entries = Vec::new();
+        self.collect_entries_from(&self.workspace_root, &mut entries)?;
+        Ok(entries)
+    }
+
+    fn collect_entries_from(&self, dir: &Path, out: &mut Vec<WorkspaceEntry>) -> Result<()> {
+        let read = fs::read_dir(dir).map_err(|error| {
+            CoreError::from(error).with_context(format!("reading {}", dir.display()))
+        })?;
+        for entry in read {
+            let entry = entry.map_err(CoreError::from)?;
+            let path = entry.path();
+            if self.is_ignored(&path) {
+                continue;
+            }
+            let file_type = entry.file_type().map_err(CoreError::from)?;
+            let rel = self.rel_path(&path)?;
+            out.push(WorkspaceEntry {
+                rel,
+                is_dir: file_type.is_dir(),
+            });
+            if file_type.is_dir() {
+                self.collect_entries_from(&path, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn contains_reserved_descendant(&self, dir: &Path) -> Result<bool> {
+        for entry in fs::read_dir(dir).map_err(|error| {
+            CoreError::from(error).with_context(format!("inspecting {}", dir.display()))
+        })? {
+            let entry = entry.map_err(CoreError::from)?;
+            let name = entry.file_name();
+            if name.to_str().is_some_and(is_reserved_path_component) {
+                return Ok(true);
+            }
+            let file_type = entry.file_type().map_err(CoreError::from)?;
+            if file_type.is_dir() && self.contains_reserved_descendant(&entry.path())? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn snapshot_dir(&self, dir: &Path, out: &mut Vec<FileRecord>) -> Result<()> {
@@ -647,37 +1016,18 @@ impl FictionVcs {
         Ok(())
     }
 
-    fn collect_rel_files(&self, dir: &Path, out: &mut Vec<String>) -> Result<()> {
-        if !dir.exists() {
-            return Ok(());
-        }
-        let read = fs::read_dir(dir)
-            .map_err(|e| CoreError::from(e).with_context(format!("reading {}", dir.display())))?;
-        for entry in read {
-            let entry = entry.map_err(CoreError::from)?;
-            let path = entry.path();
-            if self.is_ignored(&path) {
-                continue;
-            }
-            let ft = entry.file_type().map_err(CoreError::from)?;
-            if ft.is_dir() {
-                self.collect_rel_files(&path, out)?;
-            } else if ft.is_file() {
-                out.push(self.rel_path(&path)?);
-            }
-        }
-        Ok(())
-    }
-
     /// Ignore the VCS dir, the `.na` state dir, and `.git`.
     fn is_ignored(&self, path: &Path) -> bool {
         if path.starts_with(&self.vcs_dir) {
             return true;
         }
-        matches!(
-            path.file_name().and_then(|n| n.to_str()),
-            Some(VCS_DIR) | Some(".na") | Some(".git")
-        )
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.eq_ignore_ascii_case(VCS_DIR)
+                    || name.eq_ignore_ascii_case(".na")
+                    || name.eq_ignore_ascii_case(".git")
+            })
     }
 
     fn rel_path(&self, path: &Path) -> Result<String> {
@@ -687,7 +1037,16 @@ impl FictionVcs {
         let mut parts = Vec::new();
         for comp in rel.components() {
             match comp {
-                Component::Normal(os) => parts.push(os.to_string_lossy().into_owned()),
+                Component::Normal(os) => parts.push(
+                    os.to_str()
+                        .ok_or_else(|| {
+                            CoreError::invalid_input(format!(
+                                "workspace path is not valid UTF-8: {}",
+                                path.display()
+                            ))
+                        })?
+                        .to_string(),
+                ),
                 Component::CurDir => {}
                 _ => {
                     return Err(CoreError::internal(format!(
@@ -700,47 +1059,31 @@ impl FictionVcs {
         Ok(parts.join("/"))
     }
 
-    fn blob_path(&self, hash: &str) -> PathBuf {
-        self.objects_dir.join(hash)
-    }
-
     fn write_blob_if_absent(&self, hash: &str, bytes: &[u8]) -> Result<()> {
-        let path = self.blob_path(hash);
-        if path.exists() {
-            return Ok(());
-        }
-        fs::write(&path, bytes)
-            .map_err(|e| CoreError::from(e).with_context(format!("writing blob {hash}")))?;
-        Ok(())
+        write_content_object(&self.objects_dir, hash, bytes)
     }
 
     fn read_blob(&self, hash: &str) -> Result<Vec<u8>> {
-        fs::read(self.blob_path(hash))
-            .map_err(|e| CoreError::from(e).with_context(format!("reading blob {hash}")))
+        read_content_object(&self.objects_dir, hash)
     }
 
     fn append_commit(&self, commit: &Commit) -> Result<()> {
-        let line = serde_json::to_string(commit)?;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.commits_path)
-            .map_err(|e| CoreError::from(e).with_context("opening commits.jsonl"))?;
-        file.write_all(line.as_bytes())
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|e| CoreError::from(e).with_context("appending commit"))?;
-        Ok(())
+        ensure_metadata_file_or_missing(&self.commits_path, ".na-vcs/commits.jsonl")?;
+        let mut bytes = Vec::new();
+        for existing in &self.commits {
+            serde_json::to_writer(&mut bytes, existing)?;
+            bytes.push(b'\n');
+        }
+        serde_json::to_writer(&mut bytes, commit)?;
+        bytes.push(b'\n');
+        atomic_write(&self.commits_path, &bytes, ".na-vcs/commits.jsonl")
     }
 
-    /// Persist the branch/tag state atomically (write-then-rename).
-    fn save_state(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.state)?;
-        let tmp = self.state_path.with_extension("json.tmp");
-        fs::write(&tmp, json.as_bytes())
-            .map_err(|e| CoreError::from(e).with_context("writing .na-vcs/state.json"))?;
-        fs::rename(&tmp, &self.state_path)
-            .map_err(|e| CoreError::from(e).with_context("committing .na-vcs/state.json"))?;
-        Ok(())
+    fn persist_state(&self, state: &VcsState) -> Result<()> {
+        validate_state(state, &self.commits)?;
+        ensure_metadata_file_or_missing(&self.state_path, ".na-vcs/state.json")?;
+        let json = serde_json::to_string_pretty(state)?;
+        atomic_write(&self.state_path, json.as_bytes(), ".na-vcs/state.json")
     }
 
     /// The UTF-8 content of `rel` (already normalized) at commit `id`. A file
@@ -761,55 +1104,376 @@ impl FictionVcs {
 
 /// Normalize a user path to forward-slash, stripping leading `./` and slashes.
 fn normalize_rel(rel: &str) -> String {
-    let mut s = rel.replace('\\', "/");
+    let mut s = normalize_user_separators(rel);
     while let Some(stripped) = s.strip_prefix("./") {
         s = stripped.to_string();
     }
     s.trim_start_matches('/').to_string()
 }
 
-/// Convert a forward-slash relative path into a native [`PathBuf`].
-fn rel_to_pathbuf(rel: &str) -> PathBuf {
-    let mut pb = PathBuf::new();
-    for part in rel.split('/') {
-        if !part.is_empty() {
-            pb.push(part);
-        }
-    }
-    pb
-}
-
 /// Load commits from the JSON-Lines log (missing file => empty), sorted by time.
 fn load_commits(path: &Path) -> Result<Vec<Commit>> {
-    if !path.exists() {
-        return Ok(Vec::new());
+    ensure_metadata_file_or_missing(path, ".na-vcs/commits.jsonl")?;
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(CoreError::from(error).with_context("reading commits.jsonl"));
+        }
+    };
+    let terminated = bytes.last().map_or(true, |byte| *byte == b'\n');
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if terminated {
+        lines.pop();
     }
-    let file = fs::File::open(path)
-        .map_err(|e| CoreError::from(e).with_context("opening commits.jsonl"))?;
-    let reader = BufReader::new(file);
+    let line_count = lines.len();
     let mut out = Vec::new();
-    for (lineno, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| CoreError::from(e).with_context("reading commits.jsonl"))?;
+    let mut ids = HashSet::new();
+    for (lineno, raw_line) in lines.into_iter().enumerate() {
+        let line = match std::str::from_utf8(raw_line) {
+            Ok(line) => line,
+            Err(_) if !terminated && lineno + 1 == line_count => break,
+            Err(error) => {
+                return Err(CoreError::new(
+                    na_common::ErrorKind::Serialization,
+                    format!("commit log line {} is not UTF-8: {error}", lineno + 1),
+                ))
+            }
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let commit: Commit = serde_json::from_str(trimmed).map_err(|e| {
-            CoreError::from(e).with_context(format!("parsing commit at line {}", lineno + 1))
-        })?;
+        let commit: Commit = match serde_json::from_str(trimmed) {
+            Ok(commit) => commit,
+            // Older versions appended JSON and its newline separately. A
+            // process crash could therefore leave one partial final record;
+            // that record was never committed and can be discarded safely.
+            Err(_) if !terminated && lineno + 1 == line_count => break,
+            Err(error) => {
+                return Err(CoreError::from(error)
+                    .with_context(format!("parsing commit at line {}", lineno + 1)))
+            }
+        };
+        if commit.id.0.is_empty() || !ids.insert(commit.id.0.clone()) {
+            return Err(CoreError::new(
+                na_common::ErrorKind::Serialization,
+                format!("invalid or duplicate commit id at line {}", lineno + 1),
+            ));
+        }
+        if commit.branch.trim().is_empty() {
+            return Err(CoreError::new(
+                na_common::ErrorKind::Serialization,
+                format!("empty commit branch at line {}", lineno + 1),
+            ));
+        }
+        validate_file_records(&commit.files)
+            .map_err(|error| error.with_context(format!("commit log line {}", lineno + 1)))?;
         out.push(commit);
     }
     out.sort_by_key(|c| c.ts);
     Ok(out)
 }
 
+fn validate_stored_path(path: &str) -> Result<()> {
+    if path.is_empty()
+        || path.split('/').any(|part| {
+            part.is_empty()
+                || part == "."
+                || part == ".."
+                || is_reserved_path_component(part)
+                || part.contains('\0')
+                || !is_valid_platform_component(part)
+        })
+    {
+        return Err(invalid_stored_path(path));
+    }
+    Ok(())
+}
+
+fn invalid_stored_path(path: &str) -> CoreError {
+    CoreError::new(
+        na_common::ErrorKind::Serialization,
+        format!("invalid commit path {path:?}"),
+    )
+}
+
+fn validate_user_restore_path(path: &str) -> Result<()> {
+    if path.split('/').any(is_reserved_path_component) {
+        return Err(CoreError::security(format!(
+            "restore access to internal workspace state is blocked: {path}"
+        )));
+    }
+    validate_stored_path(path).map_err(|_| {
+        CoreError::invalid_input(format!("invalid workspace-relative restore path {path:?}"))
+    })
+}
+
+fn is_reserved_path_component(component: &str) -> bool {
+    let component = path_component_comparison_key(component);
+    matches!(component.as_str(), ".na" | ".na-vcs" | ".git")
+}
+
+fn validate_file_records(files: &[FileRecord]) -> Result<()> {
+    let refs: Vec<&FileRecord> = files.iter().collect();
+    validate_file_record_refs(&refs)
+}
+
+fn validate_file_record_refs(files: &[&FileRecord]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for record in files {
+        validate_stored_path(&record.path)?;
+        validate_content_hash(&record.hash)?;
+        let key = path_comparison_key(&record.path);
+        if !seen.insert(key) {
+            return Err(CoreError::new(
+                na_common::ErrorKind::Serialization,
+                format!("duplicate or aliased commit path {:?}", record.path),
+            ));
+        }
+    }
+
+    for record in files {
+        let key = path_comparison_key(&record.path);
+        for (index, _) in key.match_indices('/') {
+            let ancestor = &key[..index];
+            if seen.contains(ancestor) {
+                return Err(CoreError::new(
+                    na_common::ErrorKind::Serialization,
+                    format!(
+                        "commit path {:?} conflicts with its file ancestor {ancestor:?}",
+                        record.path
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn path_comparison_key(path: &str) -> String {
+    path.split('/')
+        .map(path_component_comparison_key)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[cfg(not(windows))]
+fn path_comparison_key(path: &str) -> String {
+    path.to_string()
+}
+
+#[cfg(windows)]
+fn path_component_comparison_key(component: &str) -> String {
+    component.trim_end_matches([' ', '.']).to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn path_component_comparison_key(component: &str) -> String {
+    component.to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn is_valid_platform_component(component: &str) -> bool {
+    if component.ends_with([' ', '.'])
+        || component.chars().any(|character| {
+            character <= '\u{1f}'
+                || matches!(character, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
+        && !matches!(
+            stem.as_str(),
+            "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+        )
+        && !matches!(
+            stem.as_str(),
+            "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        )
+}
+
+#[cfg(not(windows))]
+fn is_valid_platform_component(_component: &str) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn normalize_user_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+fn normalize_user_separators(path: &str) -> String {
+    path.to_string()
+}
+
+#[cfg(windows)]
+fn lexical_workspace_relative(jail: &PathJail, root: &Path, path: &Path) -> Option<String> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_)))
+    {
+        let root_key = windows_absolute_key(root);
+        let path_key = windows_absolute_key(path);
+        let suffix = path_key.strip_prefix(&root_key)?;
+        if !suffix.is_empty() && !suffix.starts_with('/') {
+            return None;
+        }
+        normalize_lexical_relative(suffix.trim_start_matches('/'))
+    } else {
+        jail.relative(path)
+    }
+}
+
+#[cfg(not(windows))]
+fn lexical_workspace_relative(jail: &PathJail, _root: &Path, path: &Path) -> Option<String> {
+    jail.relative(path)
+}
+
+#[cfg(windows)]
+fn windows_absolute_key(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let raw = raw
+        .strip_prefix("//?/UNC/")
+        .map(|rest| format!("//{rest}"))
+        .or_else(|| raw.strip_prefix("//?/").map(ToOwned::to_owned))
+        .unwrap_or(raw);
+    raw.trim_end_matches('/').to_lowercase()
+}
+
+#[cfg(windows)]
+fn normalize_lexical_relative(path: &str) -> Option<String> {
+    let mut components: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            component => components.push(component),
+        }
+    }
+    Some(components.join("/"))
+}
+
+fn join_stored_path(base: &Path, rel: &str) -> PathBuf {
+    let mut path = base.to_path_buf();
+    for component in rel.split('/') {
+        path.push(component);
+    }
+    path
+}
+
+fn minimize_restore_roots(roots: &mut Vec<String>) {
+    roots.sort_unstable_by(|left, right| {
+        left.split('/')
+            .count()
+            .cmp(&right.split('/').count())
+            .then_with(|| path_comparison_key(left).cmp(&path_comparison_key(right)))
+    });
+    let mut kept: Vec<String> = Vec::new();
+    for root in roots.drain(..) {
+        let key = path_comparison_key(&root);
+        let covered = kept.iter().any(|ancestor| {
+            let ancestor = path_comparison_key(ancestor);
+            key == ancestor
+                || key
+                    .strip_prefix(&ancestor)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        });
+        if !covered {
+            kept.push(root);
+        }
+    }
+    *roots = kept;
+}
+
+fn destination_symlink_error(path: &str) -> CoreError {
+    CoreError::sandbox(format!(
+        "restore destination contains a filesystem link: {path:?}"
+    ))
+}
+
+fn ensure_store_directory(path: &Path, description: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => Err(
+            CoreError::sandbox(format!("{description} is not a regular directory")),
+        ),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(|error| {
+                CoreError::from(error).with_context(format!("creating {description}"))
+            })
+        }
+        Err(error) => {
+            Err(CoreError::from(error).with_context(format!("reading metadata for {description}")))
+        }
+    }
+}
+
+fn ensure_metadata_file_or_missing(path: &Path, description: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(
+            CoreError::sandbox(format!("{description} is not a regular file")),
+        ),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(CoreError::from(error).with_context(format!("reading metadata for {description}")))
+        }
+    }
+}
+
+fn validate_state(state: &VcsState, commits: &[Commit]) -> Result<()> {
+    if state.current_branch.trim().is_empty() {
+        return Err(invalid_state("current branch must not be empty"));
+    }
+    let mut branches = HashSet::new();
+    for branch in &state.branches {
+        if branch.trim().is_empty() || !branches.insert(branch.as_str()) {
+            return Err(invalid_state("branches must be non-empty and unique"));
+        }
+    }
+    let commit_ids: HashSet<&str> = commits.iter().map(|commit| commit.id.as_str()).collect();
+    let mut labels = HashSet::new();
+    for tag in &state.tags {
+        if tag.label.trim().is_empty() || !labels.insert(tag.label.as_str()) {
+            return Err(invalid_state("tag labels must be non-empty and unique"));
+        }
+        if !commit_ids.contains(tag.commit.as_str()) {
+            return Err(invalid_state(format!(
+                "tag {:?} refers to unknown commit {}",
+                tag.label, tag.commit
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn invalid_state(message: impl Into<String>) -> CoreError {
+    CoreError::new(na_common::ErrorKind::Serialization, message)
+        .with_context("invalid .na-vcs/state.json")
+}
+
 /// Load the branch/tag state (missing file => defaults).
 fn load_state(path: &Path) -> Result<VcsState> {
-    if !path.exists() {
-        return Ok(VcsState::default());
-    }
-    let text = fs::read_to_string(path)
-        .map_err(|e| CoreError::from(e).with_context("reading .na-vcs/state.json"))?;
+    ensure_metadata_file_or_missing(path, ".na-vcs/state.json")?;
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(VcsState::default())
+        }
+        Err(error) => return Err(CoreError::from(error).with_context("reading .na-vcs/state.json")),
+    };
     if text.trim().is_empty() {
         return Ok(VcsState::default());
     }
@@ -1319,6 +1983,183 @@ mod tests {
     }
 
     #[test]
+    fn single_file_restore_rejects_parent_traversal() {
+        let root = temp_root("restore-traversal");
+        let outside = temp_root("restore-outside");
+        let victim = outside.join("victim.md");
+        fs::write(root.join("inside.md"), "inside").unwrap();
+        fs::write(&victim, "keep").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("base").unwrap();
+        let attack = format!(
+            "../{}/victim.md",
+            outside.file_name().unwrap().to_string_lossy()
+        );
+
+        let error = vcs.restore(&commit, Some(&attack)).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        assert_eq!(fs::read_to_string(victim).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    fn skip_unavailable_symlink(error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::PermissionDenied
+            || error.kind() == std::io::ErrorKind::Unsupported
+    }
+
+    #[test]
+    fn single_file_restore_rejects_reserved_normalized_aliases() {
+        let root = temp_root("restore-reserved");
+        fs::write(root.join("chapter.md"), "snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("base").unwrap();
+        let absolute = root.join(".na/state.json").to_string_lossy().into_owned();
+
+        for attack in [
+            ".na/state.json",
+            "./.NA/state.json",
+            "draft/../.Na-VcS/state.json",
+            ".GiT/config",
+            absolute.as_str(),
+        ] {
+            let error = vcs.restore(&commit, Some(attack)).unwrap_err();
+            assert!(
+                error.is(na_common::ErrorKind::SecurityBlocked),
+                "{attack}: {error}"
+            );
+        }
+
+        #[cfg(windows)]
+        for attack in [".na./state.json", ".git /config", ".na-vcs./objects"] {
+            let error = vcs.restore(&commit, Some(attack)).unwrap_err();
+            assert!(
+                error.is(na_common::ErrorKind::SecurityBlocked),
+                "{attack}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_file_restore_never_follows_destination_symlink() {
+        let root = temp_root("restore-direct-link");
+        let target = root.join("actual.md");
+        let destination = root.join("chapter.md");
+        fs::write(&destination, "snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("base").unwrap();
+        fs::remove_file(&destination).unwrap();
+        fs::write(&target, "current target").unwrap();
+        if let Err(error) = symlink_file(&target, &destination) {
+            if skip_unavailable_symlink(&error) {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        let error = vcs.restore(&commit, Some("chapter.md")).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "current target");
+        let _ = fs::remove_file(destination);
+    }
+
+    #[test]
+    fn restore_handles_file_directory_transitions_in_both_directions() {
+        let root = temp_root("restore-kind-transition");
+        let node = root.join("node");
+        fs::write(&node, "file snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let file_commit = vcs.commit("file").unwrap();
+
+        fs::remove_file(&node).unwrap();
+        fs::create_dir(&node).unwrap();
+        fs::write(node.join("child.md"), "directory snapshot").unwrap();
+        let directory_commit = vcs.commit("directory").unwrap();
+
+        vcs.restore(&file_commit, None).unwrap();
+        assert!(node.is_file());
+        assert_eq!(fs::read_to_string(&node).unwrap(), "file snapshot");
+
+        vcs.restore(&directory_commit, None).unwrap();
+        assert!(node.is_dir());
+        assert_eq!(
+            fs::read_to_string(node.join("child.md")).unwrap(),
+            "directory snapshot"
+        );
+    }
+
+    #[test]
+    fn single_path_restore_replaces_non_directory_ancestor_transactionally() {
+        let root = temp_root("restore-single-transition");
+        fs::create_dir(root.join("node")).unwrap();
+        fs::write(root.join("node/child.md"), "snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("directory").unwrap();
+        fs::remove_dir_all(root.join("node")).unwrap();
+        fs::write(root.join("node"), "conflicting file").unwrap();
+
+        vcs.restore(&commit, Some("node/child.md")).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("node/child.md")).unwrap(),
+            "snapshot"
+        );
+    }
+
+    #[test]
+    fn single_path_restore_removes_directory_when_path_is_absent() {
+        let root = temp_root("restore-absent-directory");
+        fs::write(root.join("chapter.md"), "snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("without notes").unwrap();
+        fs::create_dir(root.join("notes")).unwrap();
+        fs::write(root.join("notes/draft.md"), "untracked").unwrap();
+
+        assert_eq!(vcs.restore(&commit, Some("notes")).unwrap(), 0);
+        assert!(!root.join("notes").exists());
+    }
+
+    #[test]
+    fn full_restore_rejects_parent_symlink_escape() {
+        let root = temp_root("restore-link");
+        let outside = temp_root("restore-link-outside");
+        fs::create_dir_all(root.join("chapter")).unwrap();
+        fs::write(root.join("chapter/one.md"), "snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("base").unwrap();
+        fs::remove_dir_all(root.join("chapter")).unwrap();
+        let link = root.join("chapter");
+        if let Err(error) = symlink_dir(&outside, &link) {
+            if skip_unavailable_symlink(&error) {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        let error = vcs.restore(&commit, None).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        assert!(!outside.join("one.md").exists());
+        let _ = fs::remove_file(link);
+    }
+
+    #[test]
     fn diff_unknown_commit_is_not_found() {
         let root = temp_root("unknown");
         let vcs = FictionVcs::open(&root).unwrap();
@@ -1339,6 +2180,203 @@ mod tests {
         let vcs2 = FictionVcs::open(&root).unwrap();
         assert_eq!(vcs2.len(), 1);
         assert_eq!(vcs2.log()[0].message, "persisted");
+    }
+
+    #[test]
+    fn commit_skips_reserved_case_variants_and_reopens() {
+        let root = temp_root("reserved-case");
+        for directory in [".NA", ".GIT"] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+            fs::write(root.join(directory).join("state"), "internal").unwrap();
+        }
+        fs::write(root.join("chapter.md"), "manuscript").unwrap();
+        {
+            let mut vcs = FictionVcs::open(&root).unwrap();
+            let commit = vcs.commit("clean").unwrap();
+            let record = vcs
+                .commits
+                .iter()
+                .find(|candidate| candidate.id == commit)
+                .unwrap();
+            assert_eq!(record.files.len(), 1);
+            assert_eq!(record.files[0].path, "chapter.md");
+        }
+        assert_eq!(FictionVcs::open(&root).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn commit_log_rejects_object_path_traversal_and_reserved_targets() {
+        for (relative_path, hash) in [
+            ("leak.md", "../../../outside-file"),
+            (".na/memory.jsonl", "0-cbf29ce484222325"),
+        ] {
+            let root = temp_root("crafted-log");
+            let vcs_dir = root.join(VCS_DIR);
+            fs::create_dir_all(vcs_dir.join("objects")).unwrap();
+            let commit = Commit {
+                id: CheckpointId::new(),
+                message: "crafted".into(),
+                ts: now_millis(),
+                branch: "main".into(),
+                files: vec![FileRecord {
+                    path: relative_path.into(),
+                    hash: hash.into(),
+                    words: 0,
+                }],
+            };
+            fs::write(
+                vcs_dir.join("commits.jsonl"),
+                format!("{}\n", serde_json::to_string(&commit).unwrap()),
+            )
+            .unwrap();
+
+            let error = FictionVcs::open(&root).unwrap_err();
+            assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn commit_log_rejects_path_ancestor_conflicts() {
+        let root = temp_root("crafted-log-ancestor");
+        let vcs_dir = root.join(VCS_DIR);
+        fs::create_dir_all(vcs_dir.join("objects")).unwrap();
+        let hash = content_hash(b"content");
+        let commit = Commit {
+            id: CheckpointId::new(),
+            message: "crafted".into(),
+            ts: now_millis(),
+            branch: "main".into(),
+            files: vec![
+                FileRecord {
+                    path: "chapter".into(),
+                    hash: hash.clone(),
+                    words: 0,
+                },
+                FileRecord {
+                    path: "chapter/one.md".into(),
+                    hash,
+                    words: 0,
+                },
+            ],
+        };
+        fs::write(
+            vcs_dir.join("commits.jsonl"),
+            format!("{}\n", serde_json::to_string(&commit).unwrap()),
+        )
+        .unwrap();
+
+        let error = FictionVcs::open(&root).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+    }
+
+    #[test]
+    fn torn_final_commit_record_is_ignored_and_repaired_on_next_commit() {
+        let root = temp_root("torn-log");
+        fs::write(root.join("chapter.md"), "first").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        vcs.commit("first").unwrap();
+        drop(vcs);
+        let log_path = root.join(VCS_DIR).join("commits.jsonl");
+        let mut bytes = fs::read(&log_path).unwrap();
+        bytes.extend_from_slice(br#"{"id":"ckpt_torn""#);
+        fs::write(&log_path, bytes).unwrap();
+
+        let mut reopened = FictionVcs::open(&root).unwrap();
+        assert_eq!(reopened.len(), 1);
+        fs::write(root.join("chapter.md"), "second").unwrap();
+        reopened.commit("second").unwrap();
+        drop(reopened);
+
+        let repaired = fs::read_to_string(&log_path).unwrap();
+        assert!(repaired.ends_with('\n'));
+        assert!(!repaired.contains("ckpt_torn"));
+        assert_eq!(FictionVcs::open(&root).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn completed_corrupt_commit_record_is_rejected() {
+        let root = temp_root("corrupt-log-line");
+        let vcs_dir = root.join(VCS_DIR);
+        fs::create_dir_all(vcs_dir.join("objects")).unwrap();
+        fs::write(vcs_dir.join("commits.jsonl"), "{not-json}\n").unwrap();
+        let error = FictionVcs::open(&root).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+    }
+
+    #[test]
+    fn symlinked_vcs_metadata_is_rejected() {
+        for target_name in ["commits.jsonl", "state.json"] {
+            let root = temp_root("metadata-link");
+            let vcs_dir = root.join(VCS_DIR);
+            fs::create_dir_all(vcs_dir.join("objects")).unwrap();
+            let outside = root.join("outside-metadata");
+            fs::write(&outside, "{}").unwrap();
+            let link = vcs_dir.join(target_name);
+            if let Err(error) = symlink_file(&outside, &link) {
+                if skip_unavailable_symlink(&error) {
+                    return;
+                }
+                panic!("creating test symlink failed: {error}");
+            }
+            let error = FictionVcs::open(&root).unwrap_err();
+            assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+            let _ = fs::remove_file(link);
+        }
+
+        let root = temp_root("objects-link");
+        let vcs_dir = root.join(VCS_DIR);
+        let outside = root.join("outside-objects");
+        fs::create_dir_all(&vcs_dir).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = vcs_dir.join("objects");
+        if let Err(error) = symlink_dir(&outside, &link) {
+            if skip_unavailable_symlink(&error) {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+        let error = FictionVcs::open(&root).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        let _ = fs::remove_file(link);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_platform_valid_names_round_trip() {
+        let root = temp_root("unix-names");
+        for name in ["colon:name.md", r"backslash\name.md"] {
+            fs::write(root.join(name), name).unwrap();
+        }
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("platform names").unwrap();
+        drop(vcs);
+        for name in ["colon:name.md", r"backslash\name.md"] {
+            fs::write(root.join(name), "changed").unwrap();
+        }
+        let vcs = FictionVcs::open(&root).unwrap();
+        vcs.restore(&commit, None).unwrap();
+        for name in ["colon:name.md", r"backslash\name.md"] {
+            assert_eq!(fs::read_to_string(root.join(name)).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn corrupt_vcs_blob_aborts_restore_before_workspace_mutation() {
+        let root = temp_root("corrupt-vcs-object");
+        let file = root.join("chapter.md");
+        fs::write(&file, "snapshot").unwrap();
+        let mut vcs = FictionVcs::open(&root).unwrap();
+        let commit = vcs.commit("snapshot").unwrap();
+        let hash = vcs.commits[0].files[0].hash.clone();
+        fs::write(vcs.objects_dir.join(hash), "corrupt").unwrap();
+        fs::write(&file, "current unsaved work").unwrap();
+
+        let error = vcs.restore(&commit, None).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "current unsaved work");
+        let _ = fs::remove_dir_all(root);
     }
 
     // ---- Tool wrappers ----
@@ -1490,6 +2528,36 @@ mod tests {
             .branch("main")
             .unwrap_err()
             .is(na_common::ErrorKind::Conflict));
+    }
+
+    #[test]
+    fn failed_state_writes_do_not_change_live_branch_or_tags() {
+        let branch_root = temp_root("branch-write-failure");
+        let mut branch_vcs = FictionVcs::open(&branch_root).unwrap();
+        fs::create_dir(&branch_vcs.state_path).unwrap();
+        assert!(branch_vcs.branch("uncommitted").is_err());
+        assert_eq!(branch_vcs.current_branch(), "main");
+        assert_eq!(branch_vcs.branches(), vec!["main".to_string()]);
+
+        let switch_root = temp_root("switch-write-failure");
+        let mut switch_vcs = FictionVcs::open(&switch_root).unwrap();
+        switch_vcs.branch("draft").unwrap();
+        fs::remove_file(&switch_vcs.state_path).unwrap();
+        fs::create_dir(&switch_vcs.state_path).unwrap();
+        assert!(switch_vcs.switch("main").is_err());
+        assert_eq!(switch_vcs.current_branch(), "draft");
+
+        let tag_root = temp_root("tag-write-failure");
+        fs::write(tag_root.join("chapter.md"), "text").unwrap();
+        let mut tag_vcs = FictionVcs::open(&tag_root).unwrap();
+        let commit = tag_vcs.commit("commit").unwrap();
+        fs::create_dir(&tag_vcs.state_path).unwrap();
+        assert!(tag_vcs.tag(&commit, "uncommitted-tag").is_err());
+        assert!(tag_vcs.tags().is_empty());
+
+        let _ = fs::remove_dir_all(branch_root);
+        let _ = fs::remove_dir_all(switch_root);
+        let _ = fs::remove_dir_all(tag_root);
     }
 
     #[test]

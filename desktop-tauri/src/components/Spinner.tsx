@@ -1,12 +1,13 @@
-// 研墨 — an ink-drop spinner. A cinnabar drop orbits a faint ink ring and
-// trails a tapered wash, evoking ink dispersing in water. Pure CSS/SVG,
-// offline-safe, and it honours prefers-reduced-motion via the stylesheet.
+// 研墨 — a cinnabar drop circles a quiet ink-stone well.
+
+import { useId } from "react";
 
 interface SpinnerProps {
   size?: number;
 }
 
 export function Spinner({ size = 22 }: SpinnerProps) {
+  const gradientId = `ink-trail-${useId().replace(/:/g, "")}`;
   return (
     <span
       className="spinner"
@@ -15,32 +16,32 @@ export function Spinner({ size = 22 }: SpinnerProps) {
     >
       <svg width={size} height={size} viewBox="0 0 36 36" className="spinner__svg">
         <defs>
-          <linearGradient id="ink-trail" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="var(--cinnabar-bright)" stopOpacity="0" />
-            <stop offset="100%" stopColor="var(--cinnabar)" stopOpacity="0.9" />
+          <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--spinner-accent)" stopOpacity="0" />
+            <stop offset="100%" stopColor="var(--spinner-accent)" stopOpacity="0.92" />
           </linearGradient>
         </defs>
-        {/* faint ground ring — the ink-stone well */}
         <circle
           cx="18"
           cy="18"
           r="13"
           fill="none"
-          stroke="var(--line-strong)"
-          strokeWidth="2"
-          opacity="0.55"
+          stroke="var(--spinner-ink)"
+          strokeWidth="1.8"
+          className="spinner__well"
         />
-        {/* the dispersing arc */}
-        <path
-          d="M18 5a13 13 0 0 1 11.3 6.5"
-          fill="none"
-          stroke="url(#ink-trail)"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-          className="spinner__arc"
-        />
-        {/* the ink drop */}
-        <circle cx="18" cy="5" r="2.4" fill="var(--cinnabar)" className="spinner__drop" />
+        <path className="spinner__wash" d="M10 21c2.7 4.5 9.5 6.1 14 2.8-2.2 4-8.8 5.5-13.1 1.7-1.4-1.2-2.1-2.8-.9-4.5Z" />
+        <g className="spinner__motion">
+          <path
+            d="M18 5a13 13 0 0 1 11.3 6.5"
+            fill="none"
+            stroke={`url(#${gradientId})`}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            className="spinner__arc"
+          />
+          <circle cx="18" cy="5" r="2.35" fill="var(--spinner-accent)" className="spinner__drop" />
+        </g>
       </svg>
     </span>
   );

@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod knowledge;
+mod persist;
 pub mod work;
 
 pub use knowledge::{

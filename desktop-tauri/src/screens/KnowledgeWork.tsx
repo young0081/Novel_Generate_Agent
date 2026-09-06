@@ -3,9 +3,11 @@
 // a base from source material via the active model.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { Spinner } from "../components/Spinner";
+import AgentFeed from "../components/agent/AgentFeed";
+import WorkStatus from "../components/agent/WorkStatus";
 import ConfirmModal from "../components/ConfirmModal";
+import BatchActions from "../components/BatchActions";
 import {
   IconPlus,
   IconTrash,
@@ -15,6 +17,8 @@ import {
   IconBrush,
   IconScroll,
   IconProviders,
+  IconStop,
+  IconWarn,
 } from "../components/icons";
 import { useToast } from "../components/Toast";
 import { useWork } from "../components/WorkContext";
@@ -34,7 +38,18 @@ import {
   type KnowledgeHit,
   type KnowledgeKind,
 } from "../lib/knowledge";
-import { describeError, isDesktop } from "../lib/core";
+import { cancel, describeError, isDesktop, newRequestId } from "../lib/core";
+import {
+  derivePhase,
+  settlePendingTools,
+  stopReasonLabel,
+  upsertStep,
+  type RunStep,
+} from "../lib/agentRun";
+import type { AgentStep } from "../lib/studio";
+import { useDialogFocus } from "../lib/dialogLayer";
+import { scrollLiveAnchor } from "../lib/liveScroll";
+import { runBatch } from "../lib/batch";
 
 const KIND_OPTIONS: KnowledgeKind[] = [
   "character",
@@ -56,6 +71,17 @@ export default function KnowledgeWork() {
   const [activeKb, setActiveKb] = useState<string | null>(null);
   const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
   const [loadingEntries, setLoadingEntries] = useState(false);
+  const [entryManageMode, setEntryManageMode] = useState(false);
+  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
+  const [pendingBulkEntries, setPendingBulkEntries] = useState<KnowledgeEntry[] | null>(null);
+  const [bulkDeletingEntries, setBulkDeletingEntries] = useState(false);
+  const [bulkEntryProgress, setBulkEntryProgress] = useState<{ done: number; total: number } | null>(null);
+
+  const [baseManageMode, setBaseManageMode] = useState(false);
+  const [selectedBaseIds, setSelectedBaseIds] = useState<Set<string>>(new Set());
+  const [pendingBulkBases, setPendingBulkBases] = useState<KnowledgeBaseMeta[] | null>(null);
+  const [bulkDeletingBases, setBulkDeletingBases] = useState(false);
+  const [bulkBaseProgress, setBulkBaseProgress] = useState<{ done: number; total: number } | null>(null);
 
   // search (RAG preview)
   const [query, setQuery] = useState("");
@@ -68,6 +94,7 @@ export default function KnowledgeWork() {
 
   // add entry
   const [showAddEntry, setShowAddEntry] = useState(false);
+  const [addingEntry, setAddingEntry] = useState(false);
   const [entryDraft, setEntryDraft] = useState<{
     kind: KnowledgeKind;
     title: string;
@@ -79,12 +106,60 @@ export default function KnowledgeWork() {
   const [showFill, setShowFill] = useState(false);
   const [fillTopic, setFillTopic] = useState("");
   const [filling, setFilling] = useState(false);
-  const fillStreamRef = useRef("");
-  const [fillStream, setFillStream] = useState("");
+  const [fillCancelling, setFillCancelling] = useState(false);
+  const [fillSteps, setFillSteps] = useState<RunStep[]>([]);
+  const [fillFinished, setFillFinished] = useState(false);
+  const [fillSuccess, setFillSuccess] = useState<boolean | null>(null);
+  const [fillCancelled, setFillCancelled] = useState(false);
+  const [fillFinishNote, setFillFinishNote] = useState<string | null>(null);
+  const [fillError, setFillError] = useState<string | null>(null);
+  const fillStepSeqRef = useRef(0);
+  const fillPendingDeltaRef = useRef<AgentStep | null>(null);
+  const fillRafRef = useRef<number | null>(null);
+  const fillTerminalEventRef = useRef<{
+    success: boolean;
+    reason: string;
+    steps: number;
+  } | null>(null);
+  const fillRequestRef = useRef<string | null>(null);
+  const fillCancelRequestedRef = useRef(false);
 
   // delete base
   const [delBase, setDelBase] = useState<KnowledgeBaseMeta | null>(null);
   const [deletingBase, setDeletingBase] = useState(false);
+  const addEntryDialogRef = useRef<HTMLDivElement>(null);
+  const fillDialogRef = useRef<HTMLDivElement>(null);
+  const fillTailRef = useRef<HTMLDivElement>(null);
+  const addingEntryRef = useRef(addingEntry);
+  const fillingRef = useRef(filling);
+  addingEntryRef.current = addingEntry;
+  fillingRef.current = filling;
+
+  const closeAddEntry = useCallback(() => {
+    if (!addingEntryRef.current) setShowAddEntry(false);
+  }, []);
+
+  const closeFill = useCallback(() => {
+    if (!fillingRef.current) setShowFill(false);
+  }, []);
+
+  useDialogFocus(showAddEntry, addEntryDialogRef, closeAddEntry);
+  useDialogFocus(showFill, fillDialogRef, closeFill);
+
+  useEffect(() => {
+    if (!showFill) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollLiveAnchor(fillTailRef.current, { live: filling });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [showFill, filling, fillCancelling, fillSteps, fillFinishNote, fillError]);
+
+  useEffect(() => {
+    return () => {
+      if (fillRafRef.current != null) window.cancelAnimationFrame(fillRafRef.current);
+      if (fillRequestRef.current) void cancel(fillRequestRef.current);
+    };
+  }, []);
 
   const loadBases = useCallback(async () => {
     if (!isDesktop()) {
@@ -129,21 +204,25 @@ export default function KnowledgeWork() {
   useEffect(() => {
     if (activeKb) void loadEntries(activeKb);
     else setEntries([]);
+    setSelectedEntryIds(new Set());
+    setEntryManageMode(false);
   }, [activeKb, loadEntries]);
 
-  // stream agent progress during auto-fill
   useEffect(() => {
-    if (!isDesktop()) return;
-    const un = listen<{ step: string; content: string }>("agent-step", (e) => {
-      // Append agent thoughts/tool calls to the stream display
-      const text = e.payload.content || "";
-      fillStreamRef.current += text + "\n";
-      setFillStream(fillStreamRef.current);
+    const valid = new Set(entries.map((entry) => entry.id));
+    setSelectedEntryIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
     });
-    return () => {
-      void un.then((f) => f());
-    };
-  }, []);
+  }, [entries]);
+
+  useEffect(() => {
+    const valid = new Set(bases.map((base) => base.id));
+    setSelectedBaseIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [bases]);
 
   const onCreateBase = useCallback(async () => {
     const name = newBaseName.trim();
@@ -173,7 +252,8 @@ export default function KnowledgeWork() {
   );
 
   const onAddEntry = useCallback(async () => {
-    if (!activeKb || !entryDraft.title.trim() || !entryDraft.content.trim()) return;
+    if (addingEntry || !activeKb || !entryDraft.title.trim() || !entryDraft.content.trim()) return;
+    setAddingEntry(true);
     try {
       await addEntry({
         kbId: activeKb,
@@ -192,8 +272,10 @@ export default function KnowledgeWork() {
       toast.ok("已添加条目");
     } catch (e) {
       toast.err(describeError(e));
+    } finally {
+      setAddingEntry(false);
     }
-  }, [activeKb, entryDraft, loadEntries, loadBases, toast]);
+  }, [activeKb, addingEntry, entryDraft, loadEntries, loadBases, toast]);
 
   const onDeleteEntry = useCallback(
     async (entryId: string) => {
@@ -208,6 +290,31 @@ export default function KnowledgeWork() {
     },
     [activeKb, loadEntries, loadBases, toast],
   );
+
+  const confirmBulkDeleteEntries = useCallback(async () => {
+    if (!activeKb || !pendingBulkEntries) return;
+    setBulkDeletingEntries(true);
+    setBulkEntryProgress({ done: 0, total: pendingBulkEntries.length });
+    try {
+      const result = await runBatch(
+        pendingBulkEntries,
+        async (entry) => {
+          await deleteEntry(activeKb, entry.id);
+        },
+        (done, total) => setBulkEntryProgress({ done, total }),
+      );
+      const completedIds = new Set(result.completed.map((entry) => entry.id));
+      setEntries((current) => current.filter((entry) => !completedIds.has(entry.id)));
+      setSelectedEntryIds((current) => new Set([...current].filter((id) => !completedIds.has(id))));
+      await loadBases();
+      if (result.failed.length === 0) toast.ok(`已删除 ${result.completed.length} 条知识条目`);
+      else toast.err(`已删除 ${result.completed.length} 条，${result.failed.length} 条删除失败`);
+      setPendingBulkEntries(null);
+    } finally {
+      setBulkDeletingEntries(false);
+      setBulkEntryProgress(null);
+    }
+  }, [activeKb, loadBases, pendingBulkEntries, toast]);
 
   const onSearch = useCallback(async () => {
     const q = query.trim();
@@ -225,26 +332,191 @@ export default function KnowledgeWork() {
     }
   }, [query, toast]);
 
+  const resetFillRun = useCallback(() => {
+    if (fillRafRef.current != null) {
+      window.cancelAnimationFrame(fillRafRef.current);
+      fillRafRef.current = null;
+    }
+    fillPendingDeltaRef.current = null;
+    fillTerminalEventRef.current = null;
+    fillStepSeqRef.current = 0;
+    setFillSteps([]);
+    setFillFinished(false);
+    setFillSuccess(null);
+    setFillCancelled(false);
+    setFillFinishNote(null);
+    setFillError(null);
+  }, []);
+
+  const handleFillStepNow = useCallback((step: AgentStep) => {
+    setFillSteps((currentSteps) => (
+      upsertStep(currentSteps, step, () => (fillStepSeqRef.current += 1))
+    ));
+    if (step.phase !== "finish") return;
+
+    fillTerminalEventRef.current = {
+      success: step.success,
+      reason: step.reason,
+      steps: step.steps,
+    };
+    const stopped = step.reason === "cancelled" || fillCancelRequestedRef.current;
+    setFillFinished(true);
+    setFillSuccess(stopped ? false : step.success);
+    setFillCancelled(stopped);
+    setFillFinishNote(
+      stopped
+        ? "已由用户停止"
+        : step.success
+          ? `整理完成（共 ${step.steps} 步）`
+          : `${stopReasonLabel(step.reason)}（共 ${step.steps} 步）`,
+    );
+  }, []);
+
+  const flushFillDelta = useCallback(() => {
+    fillRafRef.current = null;
+    const pending = fillPendingDeltaRef.current;
+    fillPendingDeltaRef.current = null;
+    if (pending) handleFillStepNow(pending);
+  }, [handleFillStepNow]);
+
+  const flushFillDeltaImmediately = useCallback(() => {
+    if (fillRafRef.current != null) {
+      window.cancelAnimationFrame(fillRafRef.current);
+      fillRafRef.current = null;
+    }
+    flushFillDelta();
+  }, [flushFillDelta]);
+
+  const handleFillStep = useCallback((step: AgentStep) => {
+    if (step.phase !== "delta") {
+      flushFillDeltaImmediately();
+      handleFillStepNow(step);
+      return;
+    }
+
+    const pending = fillPendingDeltaRef.current;
+    fillPendingDeltaRef.current = pending?.phase === "delta" && pending.step === step.step
+      ? { ...pending, delta: pending.delta + step.delta }
+      : step;
+    if (fillRafRef.current == null) {
+      fillRafRef.current = window.requestAnimationFrame(flushFillDelta);
+    }
+  }, [flushFillDelta, flushFillDeltaImmediately, handleFillStepNow]);
+
   const onFill = useCallback(async () => {
     if (!activeKb || !fillTopic.trim() || filling) return;
+    resetFillRun();
     setFilling(true);
-    fillStreamRef.current = "";
-    setFillStream("");
+    setFillCancelling(false);
+    fillCancelRequestedRef.current = false;
+    const requestId = newRequestId("knowledge");
+    fillRequestRef.current = requestId;
     try {
-      const { added } = await fillFromTopic(activeKb, fillTopic.trim());
-      toast.ok(`已填充 ${added} 条设定资料`);
-      setShowFill(false);
-      setFillTopic("");
+      const result = await fillFromTopic(activeKb, fillTopic.trim(), handleFillStep, requestId);
+      flushFillDeltaImmediately();
+      const { added, outcome } = result;
+      const stoppedReason = outcome.stopped_reason;
+      const stopped = stoppedReason === "cancelled";
+      if (outcome.warning) toast.info(outcome.warning);
+      if (stopped) {
+        setFillSteps((steps) => settlePendingTools(steps, "cancelled", "已由用户停止"));
+        setFillFinished(true);
+        setFillSuccess(false);
+        setFillCancelled(true);
+        setFillFinishNote("已由用户停止");
+        toast.info("已停止填充");
+      } else if (stoppedReason !== "goal_reached") {
+        setFillSteps((steps) => settlePendingTools(steps, "error", stopReasonLabel(stoppedReason)));
+        setFillFinished(true);
+        setFillSuccess(false);
+        setFillCancelled(false);
+        setFillFinishNote(`${stopReasonLabel(stoppedReason)}（共 ${outcome.steps} 步）`);
+        toast.info("本次填充未完整完成，可调整题材后重试");
+      } else {
+        setFillSteps((steps) => settlePendingTools(steps, "success"));
+        setFillFinished(true);
+        setFillSuccess(true);
+        setFillCancelled(false);
+        setFillFinishNote(`填充完成，已写入 ${added} 条设定资料`);
+        toast.ok(`已填充 ${added} 条设定资料`);
+      }
       await loadEntries(activeKb);
       await loadBases();
     } catch (e) {
-      toast.err(describeError(e));
+      flushFillDeltaImmediately();
+      const stopped = fillCancelRequestedRef.current;
+      const message = stopped ? "已由用户停止" : describeError(e);
+      setFillSteps((steps) => settlePendingTools(
+        steps,
+        stopped ? "cancelled" : "error",
+        message,
+      ));
+      setFillFinished(true);
+      setFillSuccess(false);
+      setFillCancelled(stopped);
+      if (stopped) {
+        setFillFinishNote("已由用户停止");
+        setFillError(null);
+        toast.info("已停止填充");
+      } else {
+        setFillFinishNote(null);
+        setFillError(message);
+        toast.err(message);
+      }
     } finally {
+      if (fillRequestRef.current === requestId) fillRequestRef.current = null;
       setFilling(false);
+      setFillCancelling(false);
     }
-  }, [activeKb, fillTopic, filling, loadEntries, loadBases, toast]);
+  }, [
+    activeKb,
+    fillTopic,
+    filling,
+    flushFillDeltaImmediately,
+    handleFillStep,
+    loadEntries,
+    loadBases,
+    resetFillRun,
+    toast,
+  ]);
+
+  const stopFill = useCallback(async () => {
+    const requestId = fillRequestRef.current;
+    if (!requestId || fillCancelling) return;
+    fillCancelRequestedRef.current = true;
+    setFillCancelling(true);
+    try {
+      await cancel(requestId);
+    } catch (error) {
+      fillCancelRequestedRef.current = false;
+      setFillCancelling(false);
+      toast.err(`停止失败：${describeError(error)}`);
+    }
+  }, [fillCancelling, toast]);
 
   const confirmDeleteBase = useCallback(async () => {
+    if (pendingBulkBases) {
+      setBulkDeletingBases(true);
+      setBulkBaseProgress({ done: 0, total: pendingBulkBases.length });
+      try {
+        const result = await runBatch(
+          pendingBulkBases,
+          async (base) => { await deleteBase(base.id); },
+          (done, total) => setBulkBaseProgress({ done, total }),
+        );
+        const completedIds = new Set(result.completed.map((base) => base.id));
+        setSelectedBaseIds((current) => new Set([...current].filter((id) => !completedIds.has(id))));
+        if (activeKb && completedIds.has(activeKb)) setActiveKb(null);
+        await loadBases();
+        if (result.failed.length === 0) toast.ok(`已删除 ${result.completed.length} 个知识库`);
+        else toast.err(`已删除 ${result.completed.length} 个，${result.failed.length} 个删除失败`);
+        setPendingBulkBases(null);
+      } finally {
+        setBulkDeletingBases(false);
+        setBulkBaseProgress(null);
+      }
+      return;
+    }
     if (!delBase) return;
     setDeletingBase(true);
     try {
@@ -257,9 +529,49 @@ export default function KnowledgeWork() {
     } finally {
       setDeletingBase(false);
     }
-  }, [delBase, loadBases, toast]);
+  }, [activeKb, delBase, loadBases, pendingBulkBases, toast]);
 
   const currentBase = bases.find((b) => b.id === activeKb) ?? null;
+  const allEntriesSelected = entries.length > 0 && entries.every((entry) => selectedEntryIds.has(entry.id));
+  const allBasesSelected = bases.length > 0 && bases.every((base) => selectedBaseIds.has(base.id));
+  const toggleEntry = useCallback((id: string) => {
+    setSelectedEntryIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleAllEntries = useCallback(() => {
+    setSelectedEntryIds(allEntriesSelected ? new Set() : new Set(entries.map((entry) => entry.id)));
+  }, [allEntriesSelected, entries]);
+  const toggleBase = useCallback((id: string) => {
+    setSelectedBaseIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleAllBases = useCallback(() => {
+    setSelectedBaseIds(allBasesSelected ? new Set() : new Set(bases.map((base) => base.id)));
+  }, [allBasesSelected, bases]);
+  const fillActivelyRunning = filling && !fillFinished;
+  const hasFillRun = filling || fillSteps.length > 0 || fillFinished || fillError !== null;
+  const fillPhase = derivePhase({
+    running: fillActivelyRunning,
+    steps: fillSteps,
+    finished: fillFinished,
+    success: fillSuccess,
+    errored: fillError !== null,
+    cancelling: fillCancelling,
+    cancelled: fillCancelled,
+  });
+  const fillLastStep = fillSteps.length > 0 ? fillSteps[fillSteps.length - 1].step : 0;
+  const fillToolCount = fillSteps.reduce((count, step) => count + step.toolCalls.length, 0);
+  const fillCurrentTool = fillPhase === "tooling" && fillSteps.length > 0
+    ? fillSteps[fillSteps.length - 1].toolCalls.find(
+        (tool) => tool.status === "queued" || tool.status === "running",
+      )?.name
+    : undefined;
 
   return (
     <div className="kb">
@@ -267,15 +579,49 @@ export default function KnowledgeWork() {
       <aside className="kb__sidebar">
         <div className="kb__sidebar-head">
           <span className="kb__sidebar-title">知识库</span>
-          <button
-            className="icon-btn"
-            title="新建知识库"
-            aria-label="新建知识库"
-            onClick={() => setShowNewBase((s) => !s)}
-          >
-            <IconPlus size={15} />
-          </button>
+          <div className="kb__sidebar-actions">
+            {bases.length > 1 && (
+              <button
+                className={`btn btn--ghost btn--xs${baseManageMode ? " is-active" : ""}`}
+                onClick={() => {
+                  setBaseManageMode((value) => !value);
+                  setSelectedBaseIds(new Set());
+                }}
+                aria-pressed={baseManageMode}
+              >
+                {baseManageMode ? "完成" : "管理"}
+              </button>
+            )}
+            <button
+              className="icon-btn"
+              title="新建知识库"
+              aria-label="新建知识库"
+              onClick={() => setShowNewBase((s) => !s)}
+            >
+              <IconPlus size={15} />
+            </button>
+          </div>
         </div>
+
+        {baseManageMode && bases.length > 0 && (
+          <BatchActions
+            selectedCount={selectedBaseIds.size}
+            totalCount={bases.length}
+            allSelected={allBasesSelected}
+            onToggleAll={toggleAllBases}
+            onClear={() => setSelectedBaseIds(new Set())}
+            label="批量管理知识库"
+          >
+            <button
+              type="button"
+              className="btn btn--danger btn--sm"
+              disabled={selectedBaseIds.size === 0 || bulkDeletingBases}
+              onClick={() => setPendingBulkBases(bases.filter((base) => selectedBaseIds.has(base.id)))}
+            >
+              <IconTrash size={13} /> 删除已选
+            </button>
+          </BatchActions>
+        )}
 
         {showNewBase && (
           <div className="kb__new-base">
@@ -309,18 +655,28 @@ export default function KnowledgeWork() {
             <p className="kb__sidebar-empty">还没有知识库</p>
           ) : (
             bases.map((b) => (
-              <button
-                key={b.id}
-                className={`kb__base${b.id === activeKb ? " is-active" : ""}`}
-                onClick={() => setActiveKb(b.id)}
-              >
-                <span className="kb__base-name">{b.name}</span>
-                <span className="kb__base-count">{b.entry_count}</span>
-                <span
-                  className={`kb__base-dot${b.active ? " is-on" : ""}`}
-                  title={b.active ? "参与检索" : "已禁用"}
-                />
-              </button>
+              <div key={b.id} className={`kb__base-row${baseManageMode ? " is-manage" : ""}`}>
+                {baseManageMode && (
+                  <input
+                    type="checkbox"
+                    className="batch-select"
+                    checked={selectedBaseIds.has(b.id)}
+                    onChange={() => toggleBase(b.id)}
+                    aria-label={`选择知识库：${b.name}`}
+                  />
+                )}
+                <button
+                  className={`kb__base${b.id === activeKb ? " is-active" : ""}`}
+                  onClick={() => baseManageMode ? toggleBase(b.id) : setActiveKb(b.id)}
+                >
+                  <span className="kb__base-name">{b.name}</span>
+                  <span className="kb__base-count">{b.entry_count}</span>
+                  <span
+                    className={`kb__base-dot${b.active ? " is-on" : ""}`}
+                    title={b.active ? "参与检索" : "已禁用"}
+                  />
+                </button>
+              </div>
             ))
           )}
         </div>
@@ -365,7 +721,25 @@ export default function KnowledgeWork() {
                 </label>
               </div>
               <div className="kb__main-actions">
-                <button className="btn btn--ghost btn--sm" onClick={() => setShowFill(true)}>
+                {hits === null && entries.length > 0 && (
+                  <button
+                    className={`btn btn--ghost btn--sm${entryManageMode ? " is-active" : ""}`}
+                    onClick={() => {
+                      setEntryManageMode((value) => !value);
+                      setSelectedEntryIds(new Set());
+                    }}
+                    aria-pressed={entryManageMode}
+                  >
+                    {entryManageMode ? "完成" : "批量管理"}
+                  </button>
+                )}
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => {
+                    resetFillRun();
+                    setShowFill(true);
+                  }}
+                >
                   <IconProviders size={14} />
                   联网填充
                 </button>
@@ -424,6 +798,26 @@ export default function KnowledgeWork() {
               </button>
             </div>
 
+            {entryManageMode && hits === null && entries.length > 0 && (
+              <BatchActions
+                selectedCount={selectedEntryIds.size}
+                totalCount={entries.length}
+                allSelected={allEntriesSelected}
+                onToggleAll={toggleAllEntries}
+                onClear={() => setSelectedEntryIds(new Set())}
+                label="批量管理知识条目"
+              >
+                <button
+                  type="button"
+                  className="btn btn--danger btn--sm"
+                  disabled={selectedEntryIds.size === 0 || bulkDeletingEntries}
+                  onClick={() => setPendingBulkEntries(entries.filter((entry) => selectedEntryIds.has(entry.id)))}
+                >
+                  <IconTrash size={13} /> 删除已选
+                </button>
+              </BatchActions>
+            )}
+
             {/* Search results OR all entries */}
             <div className="kb__entries">
               {hits !== null ? (
@@ -472,9 +866,18 @@ export default function KnowledgeWork() {
                 </div>
               ) : (
                 entries.map((en) => (
-                  <article key={en.id} className="kb-entry">
-                    <div className="kb-entry__head">
-                      <span className={`kb-entry__kind kind--${en.kind}`}>
+                    <article key={en.id} className={`kb-entry${entryManageMode ? " is-manage" : ""}`}>
+                      <div className="kb-entry__head">
+                        {entryManageMode && (
+                          <input
+                            type="checkbox"
+                            className="batch-select"
+                            checked={selectedEntryIds.has(en.id)}
+                            onChange={() => toggleEntry(en.id)}
+                            aria-label={`选择条目：${en.title}`}
+                          />
+                        )}
+                        <span className={`kb-entry__kind kind--${en.kind}`}>
                         {KIND_LABELS[en.kind]}
                       </span>
                       <h4 className="kb-entry__title">{en.title}</h4>
@@ -507,16 +910,19 @@ export default function KnowledgeWork() {
 
       {/* Add-entry drawer */}
       {showAddEntry && (
-        <div className="library__overlay" onClick={() => setShowAddEntry(false)}>
+        <div className="library__overlay" onClick={closeAddEntry}>
           <div
+            ref={addEntryDialogRef}
             className="library__sheet"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
+            aria-modal="true"
             aria-label="添加条目"
+            tabIndex={-1}
           >
             <header className="library__sheet-head">
               <h3>添加设定条目</h3>
-              <button className="icon-btn" onClick={() => setShowAddEntry(false)} aria-label="关闭">
+              <button className="icon-btn" onClick={closeAddEntry} aria-label="关闭">
                 <IconClose size={16} />
               </button>
             </header>
@@ -545,7 +951,7 @@ export default function KnowledgeWork() {
                     value={entryDraft.title}
                     onChange={(e) => setEntryDraft((d) => ({ ...d, title: e.target.value }))}
                     placeholder="名称 / 术语…"
-                    autoFocus
+                    data-autofocus
                   />
                 </label>
               </div>
@@ -570,16 +976,16 @@ export default function KnowledgeWork() {
               </label>
             </div>
             <footer className="library__sheet-foot">
-              <button className="btn btn--ghost" onClick={() => setShowAddEntry(false)}>
+              <button className="btn btn--ghost" onClick={closeAddEntry}>
                 取消
               </button>
               <button
                 className="btn btn--primary"
                 onClick={() => void onAddEntry()}
-                disabled={!entryDraft.title.trim() || !entryDraft.content.trim()}
+                disabled={addingEntry || !entryDraft.title.trim() || !entryDraft.content.trim()}
               >
-                <IconCheck size={16} />
-                添加
+                {addingEntry ? <Spinner size={14} /> : <IconCheck size={16} />}
+                {addingEntry ? "添加中…" : "添加"}
               </button>
             </footer>
           </div>
@@ -588,18 +994,21 @@ export default function KnowledgeWork() {
 
       {/* Auto-fill drawer */}
       {showFill && (
-        <div className="library__overlay" onClick={() => !filling && setShowFill(false)}>
+        <div className="library__overlay" onClick={closeFill}>
           <div
+            ref={fillDialogRef}
             className="library__sheet"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
+            aria-modal="true"
             aria-label="联网填充"
+            tabIndex={-1}
           >
             <header className="library__sheet-head">
               <h3>联网填充设定资料</h3>
               <button
                 className="icon-btn"
-                onClick={() => !filling && setShowFill(false)}
+                onClick={closeFill}
                 aria-label="关闭"
               >
                 <IconClose size={16} />
@@ -614,38 +1023,69 @@ export default function KnowledgeWork() {
                   onChange={(e) => setFillTopic(e.target.value)}
                   placeholder={current?.source_material || "例如：斗破苍穹"}
                   disabled={filling}
-                  autoFocus
+                  data-autofocus
                 />
               </label>
               <p className="library__hint">
                 <IconBrush size={13} />
                 AI 将整理该作品的核心人物、世界规则、地点、事件与术语，自动写入当前知识库。
               </p>
-              {filling && fillStream && (
+              {hasFillRun && (
                 <div className="kb__fill-stream">
                   <div className="kb__fill-stream-label">
-                    <Spinner size={12} />
-                    正在整理…
+                    <WorkStatus
+                      phase={fillPhase}
+                      step={fillLastStep}
+                      toolCount={fillToolCount}
+                      note={fillCurrentTool}
+                    />
                   </div>
-                  <pre className="kb__fill-stream-text">{fillStream.slice(-600)}</pre>
+                  <AgentFeed
+                    steps={fillSteps}
+                    running={fillActivelyRunning}
+                    phase={fillPhase}
+                    pendingText="AI 正在整理下一条设定…"
+                    tailRef={fillTailRef}
+                  />
+                  {!filling && (fillFinishNote || fillError) && (
+                    <div
+                      className="kb__fill-stream-label"
+                      role={fillError ? "alert" : "status"}
+                      aria-live={fillError ? "assertive" : "polite"}
+                      aria-atomic="true"
+                    >
+                      {fillSuccess ? (
+                        <IconCheck size={14} />
+                      ) : fillError ? (
+                        <IconWarn size={14} />
+                      ) : (
+                        <IconStop size={14} />
+                      )}
+                      <span>{fillError ? `填充失败：${fillError}` : fillFinishNote}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
             <footer className="library__sheet-foot">
               <button
                 className="btn btn--ghost"
-                onClick={() => !filling && setShowFill(false)}
+                onClick={closeFill}
                 disabled={filling}
               >
                 取消
               </button>
               <button
-                className="btn btn--primary"
-                onClick={() => void onFill()}
-                disabled={!fillTopic.trim() || filling}
+                className={`btn ${filling ? "btn--danger" : "btn--primary"}`}
+                onClick={() => filling ? void stopFill() : void onFill()}
+                disabled={filling ? fillCancelling : !fillTopic.trim()}
               >
-                {filling ? <Spinner size={14} /> : <IconProviders size={16} />}
-                {filling ? "填充中…" : "开始填充"}
+                {filling ? (
+                  fillCancelling ? <Spinner size={14} /> : <IconStop size={14} />
+                ) : (
+                  <IconProviders size={16} />
+                )}
+                {fillCancelling ? "停止中…" : filling ? "停止" : "开始填充"}
               </button>
             </footer>
           </div>
@@ -653,22 +1093,51 @@ export default function KnowledgeWork() {
       )}
 
       <ConfirmModal
-        open={!!delBase}
-        title="删除这个知识库？"
+        open={!!delBase || pendingBulkBases !== null}
+        title={pendingBulkBases ? `删除选中的 ${pendingBulkBases.length} 个知识库？` : "删除这个知识库？"}
         sealChar="删"
         danger
-        busy={deletingBase}
+        busy={deletingBase || bulkDeletingBases}
         confirmLabel="删除"
         body={
           <>
-            将永久删除知识库「{delBase?.name}」及其全部 {delBase?.entry_count} 条设定。
-            <br />
-            此操作不可撤销。
+            {pendingBulkBases ? (
+              <>
+                将永久删除选中的 {pendingBulkBases.length} 个知识库及其中的全部设定。
+                {bulkBaseProgress && <><br />正在处理：{bulkBaseProgress.done} / {bulkBaseProgress.total}</>}
+                <br />此操作不可撤销。
+              </>
+            ) : (
+              <>将永久删除知识库「{delBase?.name}」及其全部 {delBase?.entry_count} 条设定。<br />此操作不可撤销。</>
+            )}
           </>
         }
         onConfirm={() => void confirmDeleteBase()}
         onCancel={() => {
-          if (!deletingBase) setDelBase(null);
+          if (!deletingBase && !bulkDeletingBases) {
+            setDelBase(null);
+            setPendingBulkBases(null);
+          }
+        }}
+      />
+
+      <ConfirmModal
+        open={pendingBulkEntries !== null}
+        title={`删除选中的 ${pendingBulkEntries?.length ?? 0} 条知识？`}
+        sealChar="删"
+        danger
+        busy={bulkDeletingEntries}
+        confirmLabel="删除"
+        body={
+          <>
+            将永久删除当前知识库中选中的 {pendingBulkEntries?.length ?? 0} 条设定。
+            {bulkEntryProgress && <><br />正在处理：{bulkEntryProgress.done} / {bulkEntryProgress.total}</>}
+            <br />此操作不可撤销。
+          </>
+        }
+        onConfirm={() => void confirmBulkDeleteEntries()}
+        onCancel={() => {
+          if (!bulkDeletingEntries) setPendingBulkEntries(null);
         }}
       />
     </div>

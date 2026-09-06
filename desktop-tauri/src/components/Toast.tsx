@@ -5,11 +5,13 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { IconCheck, IconWarn, IconInfo } from "./icons";
+import { layerExitDelay } from "../lib/dialogLayer";
 
 type ToastKind = "ok" | "err" | "info";
 
@@ -55,7 +57,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     exitTimers.current[id] = setTimeout(() => {
       setItems((prev) => prev.filter((it) => it.id !== id));
       delete exitTimers.current[id];
-    }, EXIT_MS);
+    }, layerExitDelay(EXIT_MS));
   }, []);
 
   const push = useCallback(
@@ -76,23 +78,26 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const api: ToastApi = {
-    push,
-    ok: (m) => push(m, "ok"),
-    err: (m) => push(m, "err"),
-    info: (m) => push(m, "info"),
-  };
+  const api = useMemo<ToastApi>(
+    () => ({
+      push,
+      ok: (message) => push(message, "ok"),
+      err: (message) => push(message, "err"),
+      info: (message) => push(message, "info"),
+    }),
+    [push],
+  );
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="toast-wrap" role="status" aria-live="polite">
+      <div className="toast-container" role="status" aria-live="polite">
         {items.map((t) => (
-          <div
+          <button
+            type="button"
             key={t.id}
             className={`toast toast--${t.kind}${t.leaving ? " is-leaving" : ""}`}
             onClick={() => remove(t.id)}
-            role="button"
             title="点击关闭"
           >
             {t.kind === "ok" ? (
@@ -103,7 +108,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <IconInfo size={16} />
             )}
             <span>{t.message}</span>
-          </div>
+          </button>
         ))}
       </div>
     </ToastContext.Provider>

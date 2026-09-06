@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use na_common::{CoreError, Result};
 
 use crate::message::Role;
-use crate::session::Session;
+use crate::session::{atomic_write, Session};
 
 /// A persisted session plus light metadata for the library.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,34 +63,32 @@ impl SessionStore {
         Ok(SessionStore { dir })
     }
 
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{id}.json"))
+    fn path_for(&self, id: &str) -> Result<PathBuf> {
+        validate_session_id(id)?;
+        Ok(self.dir.join(format!("{id}.json")))
     }
 
     /// Insert or replace a session (keyed by its id), atomically.
     pub fn save(&self, record: &SessionRecord) -> Result<()> {
         let id = record.session.id.as_str();
-        let path = self.path_for(id);
+        let path = self.path_for(id)?;
         let json = serde_json::to_string_pretty(record)?;
-        let tmp = self.dir.join(format!("{id}.json.tmp"));
-        std::fs::write(&tmp, json.as_bytes())
-            .map_err(|e| CoreError::from(e).with_context("writing session file"))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| CoreError::from(e).with_context("replacing session file"))?;
-        Ok(())
+        atomic_write(&path, json.as_bytes(), "session record")
     }
 
     /// Load one full record by id.
     pub fn get(&self, id: &str) -> Result<SessionRecord> {
-        let path = self.path_for(id);
+        let path = self.path_for(id)?;
         let text = std::fs::read_to_string(&path)
             .map_err(|e| CoreError::from(e).with_context(format!("reading session {id}")))?;
-        parse_record(&text)
+        let record = parse_record(&text)?;
+        validate_record_id(&record, id)?;
+        Ok(record)
     }
 
     /// Remove a session by id (no-op if it doesn't exist).
     pub fn delete(&self, id: &str) -> Result<()> {
-        let path = self.path_for(id);
+        let path = self.path_for(id)?;
         if path.exists() {
             std::fs::remove_file(&path)
                 .map_err(|e| CoreError::from(e).with_context("deleting session file"))?;
@@ -98,29 +96,64 @@ impl SessionStore {
         Ok(())
     }
 
-    /// All session summaries, newest-updated first. Unreadable files are skipped.
+    /// All session summaries, newest-updated first.
     pub fn list(&self) -> Result<Vec<SessionSummary>> {
         let mut out = Vec::new();
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(e) => e,
-            Err(_) => return Ok(out),
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&self.dir)
+            .map_err(|e| CoreError::from(e).with_context("reading sessions directory"))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|e| CoreError::from(e).with_context("reading sessions directory entry"))?;
             let path = entry.path();
-            // Only plain `.json` files (skip `.json.tmp` and anything else).
+            // Only plain `.json` files (skip temporary and unrelated files).
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if let Ok(rec) = parse_record(&text) {
-                out.push(summarize(&rec));
-            }
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                CoreError::from(e).with_context(format!("reading session file {}", path.display()))
+            })?;
+            let rec = parse_record(&text).map_err(|error| {
+                error.with_context(format!("parsing session file {}", path.display()))
+            })?;
+            let file_id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| {
+                    CoreError::new(
+                        na_common::ErrorKind::Serialization,
+                        format!("session filename is not valid Unicode: {}", path.display()),
+                    )
+                })?;
+            validate_record_id(&rec, file_id)?;
+            out.push(summarize(&rec));
         }
         out.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
         Ok(out)
     }
+}
+
+fn validate_session_id(id: &str) -> Result<()> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(CoreError::invalid_input(format!(
+            "invalid session id {id:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_record_id(record: &SessionRecord, expected: &str) -> Result<()> {
+    let actual = record.session.id.as_str();
+    if actual != expected {
+        return Err(CoreError::new(
+            na_common::ErrorKind::Serialization,
+            format!("session id mismatch: file is {expected:?}, record is {actual:?}"),
+        ));
+    }
+    Ok(())
 }
 
 /// Parse a record, tolerating an older bare-[`Session`] file.
@@ -261,5 +294,52 @@ mod tests {
         assert_eq!(list[0].title, "旧档");
         let rec = store.get(s.id.as_str()).unwrap();
         assert_eq!(rec.goal, None);
+    }
+
+    #[test]
+    fn ids_cannot_escape_the_session_directory() {
+        let dir = temp_dir("traversal");
+        let store = SessionStore::open(&dir).unwrap();
+        let outside = dir.parent().unwrap().join("session-store-outside.json");
+        std::fs::write(&outside, "do not delete").unwrap();
+
+        assert!(store.get("../session-store-outside").is_err());
+        assert!(store.delete("../session-store-outside").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "do not delete");
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[test]
+    fn record_id_must_match_requested_filename() {
+        let dir = temp_dir("id-mismatch");
+        let store = SessionStore::open(&dir).unwrap();
+        let session = Session::new("wrong file");
+        let actual_id = session.id.as_str().to_string();
+        let record = SessionRecord {
+            session,
+            kind: "writing".into(),
+            goal: None,
+        };
+        std::fs::write(
+            dir.join("sess_expected.json"),
+            serde_json::to_vec_pretty(&record).unwrap(),
+        )
+        .unwrap();
+
+        let get_error = store.get("sess_expected").unwrap_err();
+        assert!(get_error.is(na_common::ErrorKind::Serialization));
+        let list_error = store.list().unwrap_err();
+        assert!(list_error.is(na_common::ErrorKind::Serialization));
+        assert!(!dir.join(format!("{actual_id}.json")).exists());
+    }
+
+    #[test]
+    fn corrupt_session_is_reported_by_listing() {
+        let dir = temp_dir("corrupt-list");
+        let store = SessionStore::open(&dir).unwrap();
+        std::fs::write(dir.join("sess_corrupt.json"), "{ broken").unwrap();
+
+        let error = store.list().unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
     }
 }

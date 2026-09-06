@@ -11,7 +11,8 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { isDesktop, NotInDesktopError } from "./core";
+import { isDesktop, newRequestId, NotInDesktopError } from "./core";
+import type { SamplingParams } from "./providers";
 
 /** A single chat message in a session transcript. */
 export interface Message {
@@ -46,31 +47,82 @@ export interface LiveRun {
     steps: number;
     final_answer: string | null;
     stopped_reason: string;
+    auto_saved_path?: string;
+    auto_save_error?: string;
+    warning?: string;
   };
   session: Session;
 }
 
 /** A single tool call surfaced in a streamed "model" step. */
 export interface StepToolCall {
+  id: string;
   name: string;
   args: unknown;
+}
+
+/** Provider token accounting, including Gemini explicit-cache hits. */
+export interface UsageMetadata {
+  prompt_token_count?: number;
+  response_token_count?: number;
+  total_token_count?: number;
+  cached_content_token_count?: number;
+}
+
+/** A tool call has been dispatched using its stable correlation id. */
+export interface ToolStartStep {
+  phase: "tool_start";
+  step: number;
+  id: string;
+  name: string;
+}
+
+/** A tool call reached a terminal result; no full output is exposed. */
+export interface ToolFinishStep {
+  phase: "tool_finish";
+  step: number;
+  id: string;
+  name: string;
+  ok: boolean;
+  duration_ms: number;
+  summary: string | null;
+  /** A bounded categorical error code, never the provider/tool error body. */
+  error: string | null;
 }
 
 /**
  * Live progress payloads emitted on the "agent-step" event. A discriminated
  * union on `phase` so the UI can render each kind precisely.
  */
-export type AgentStep =
+export type AgentStep = (
   | { phase: "step"; step: number; messages: number }
   | { phase: "delta"; step: number; delta: string }
-  | { phase: "model"; step: number; text: string; tool_calls: StepToolCall[] }
+  | {
+      phase: "model";
+      step: number;
+      text: string;
+      tool_calls: StepToolCall[];
+      usage?: UsageMetadata | null;
+    }
+  | ToolStartStep
+  | ToolFinishStep
   | {
       phase: "finish";
       reason: string;
       success: boolean;
       steps: number;
       final: string | null;
-    };
+    }
+) & { request_id?: string };
+
+export type LiveSessionKind = "writing" | "planning" | "simulation" | "ide" | "discuss";
+
+export type ThinkingLevel = "light" | "balanced" | "deep";
+
+export interface LiveRunOptions {
+  sampling?: SamplingParams;
+  thinkingLevel?: ThinkingLevel;
+}
 
 /**
  * Run the real agent loop, streaming each step to `onStep`.
@@ -84,19 +136,27 @@ export async function runGoalLive(
   goal: string,
   title: string,
   onStep: (step: AgentStep) => void,
-  sessionId?: string,
+    sessionId?: string,
+    sessionKind: LiveSessionKind = "writing",
+    requestId?: string,
+    options?: LiveRunOptions,
 ): Promise<LiveRun> {
   if (!isDesktop()) {
     throw new NotInDesktopError();
   }
+  const activeRequestId = requestId ?? newRequestId("agent");
   const un = await listen<AgentStep>("agent-step", (e) => {
-    onStep(e.payload);
+    if (e.payload.request_id === activeRequestId) onStep(e.payload);
   });
   try {
     return (await tauriInvoke("run_goal_live", {
       goal,
       title,
       sessionId,
+      sessionKind,
+      requestId: activeRequestId,
+      sampling: options?.sampling,
+      thinkingLevel: options?.thinkingLevel,
     })) as LiveRun;
   } finally {
     un();
@@ -134,19 +194,32 @@ export async function chatStream(
   messages: ChatMessage[],
   onDelta: (delta: string) => void,
   sessionId?: string,
-): Promise<{ text: string; sessionId: string }> {
+  requestId?: string,
+): Promise<{ text: string; sessionId: string; warning?: string; cancelled?: boolean }> {
   if (!isDesktop()) {
     throw new NotInDesktopError();
   }
-  const un = await listen<{ delta: string }>("chat-delta", (e) => {
-    onDelta(e.payload.delta);
+  const activeRequestId = requestId ?? newRequestId("chat");
+  const un = await listen<{ delta: string; request_id?: string }>("chat-delta", (e) => {
+    if (e.payload.request_id === activeRequestId) onDelta(e.payload.delta);
   });
   try {
-    const res = (await tauriInvoke("chat_stream", { messages, sessionId })) as {
+    const res = (await tauriInvoke("chat_stream", {
+      messages,
+      sessionId,
+      requestId: activeRequestId,
+    })) as {
       text: string;
       session_id: string;
+      warning?: string;
+      cancelled?: boolean;
     };
-    return { text: res.text, sessionId: res.session_id };
+    return {
+      text: res.text,
+      sessionId: res.session_id,
+      warning: res.warning,
+      cancelled: res.cancelled,
+    };
   } finally {
     un();
   }

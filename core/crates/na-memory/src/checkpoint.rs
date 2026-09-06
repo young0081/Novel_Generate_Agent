@@ -15,32 +15,18 @@
 //! `create` pushes the new id and clears redo; `undo` steps back to the previous
 //! checkpoint's state; `redo` steps forward again.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 
 use na_common::time::now_millis;
 use na_common::{CheckpointId, CoreError, Result};
+use na_sandbox::PathJail;
 use serde::{Deserialize, Serialize};
 
-/// Compute a stable content key for `bytes`.
-///
-/// We combine the byte length with a 64-bit FNV-1a hash and render both as hex
-/// (`"{len:x}-{fnv:x}"`). Pairing the length with the hash makes accidental
-/// collisions astronomically unlikely for the file sizes we deal with, while
-/// staying dependency-free (no `sha2`).
-pub fn content_hash(bytes: &[u8]) -> String {
-    // FNV-1a 64-bit constants.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    format!("{:x}-{:x}", bytes.len(), hash)
-}
+use crate::object_store::atomic_write_file;
+use crate::{content_hash, read_content_object, validate_content_hash, write_content_object};
 
 /// The persisted record of a single snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,8 +69,9 @@ impl CheckpointStore {
     /// in-memory only and start fresh on open (the on-disk snapshots remain
     /// fully usable via [`list`](Self::list) and [`restore`](Self::restore)).
     pub fn open(workspace_root: impl AsRef<Path>, store_dir: impl AsRef<Path>) -> Result<Self> {
-        let workspace_root = workspace_root.as_ref().to_path_buf();
-        let store_dir = store_dir.as_ref().to_path_buf();
+        let jail = PathJail::new(workspace_root)?;
+        let workspace_root = jail.root().to_path_buf();
+        let store_dir = absolute_store_path(store_dir.as_ref())?;
         let objects_dir = store_dir.join("objects");
         let manifest_path = store_dir.join("checkpoints.jsonl");
 
@@ -114,6 +101,8 @@ impl CheckpointStore {
         let root = self.workspace_root.clone();
         self.snapshot_dir(&root, &mut files)?;
         files.sort();
+        validate_manifest_ancestor_conflicts(&files)?;
+        validate_windows_path_aliases(&files)?;
 
         let id = CheckpointId::new();
         let manifest = CheckpointManifest {
@@ -122,8 +111,10 @@ impl CheckpointStore {
             created_ms: now_millis(),
             files,
         };
-        self.append_manifest(&manifest)?;
-        self.manifests.push(manifest);
+        let mut next = self.manifests.clone();
+        next.push(manifest);
+        self.persist_manifest_set(&next)?;
+        self.manifests = next;
 
         self.undo_stack.push(id.clone());
         self.redo_stack.clear();
@@ -166,15 +157,25 @@ impl CheckpointStore {
         if self.undo_stack.len() < 2 {
             return Ok(None);
         }
-        let current = self.undo_stack.pop().expect("len checked >= 2");
-        self.redo_stack.push(current);
+        let current = self
+            .undo_stack
+            .pop()
+            .ok_or_else(|| CoreError::internal("undo history changed unexpectedly"))?;
         let target = self
             .undo_stack
             .last()
             .cloned()
-            .expect("at least one remains");
-        self.restore_without_history(&target)?;
-        Ok(Some(target))
+            .ok_or_else(|| CoreError::internal("undo history lost its target"))?;
+        match self.restore_without_history(&target) {
+            Ok(()) => {
+                self.redo_stack.push(current);
+                Ok(Some(target))
+            }
+            Err(error) => {
+                self.undo_stack.push(current);
+                Err(error)
+            }
+        }
     }
 
     /// Re-apply a state previously undone. Returns the id now matched, or `None`
@@ -183,9 +184,16 @@ impl CheckpointStore {
         let Some(target) = self.redo_stack.pop() else {
             return Ok(None);
         };
-        self.undo_stack.push(target.clone());
-        self.restore_without_history(&target)?;
-        Ok(Some(target))
+        match self.restore_without_history(&target) {
+            Ok(()) => {
+                self.undo_stack.push(target.clone());
+                Ok(Some(target))
+            }
+            Err(error) => {
+                self.redo_stack.push(target);
+                Err(error)
+            }
+        }
     }
 
     /// The id the workspace currently matches according to the undo stack, if any.
@@ -198,12 +206,13 @@ impl CheckpointStore {
     /// remaining checkpoint, and forget it in the undo/redo history. The
     /// workspace files themselves are untouched. Returns `NotFound` if unknown.
     pub fn delete(&mut self, id: &CheckpointId) -> Result<()> {
-        let before = self.manifests.len();
-        self.manifests.retain(|m| &m.id != id);
-        if self.manifests.len() == before {
+        let mut next = self.manifests.clone();
+        next.retain(|m| &m.id != id);
+        if next.len() == self.manifests.len() {
             return Err(CoreError::not_found(format!("checkpoint {id} not found")));
         }
-        self.persist_manifests()?;
+        self.persist_manifest_set(&next)?;
+        self.manifests = next;
         self.gc_objects()?;
         self.undo_stack.retain(|c| c != id);
         self.redo_stack.retain(|c| c != id);
@@ -227,42 +236,202 @@ impl CheckpointStore {
     }
 
     fn apply_manifest(&self, manifest: &CheckpointManifest) -> Result<()> {
-        use std::collections::BTreeSet;
+        let plan = self.build_restore_plan(manifest)?;
 
-        // Desired relative paths (normalized to forward slashes in the manifest).
-        let desired: BTreeSet<&str> = manifest.files.iter().map(|(p, _)| p.as_str()).collect();
+        // Remove leaves first, then directories. Each path is reclassified
+        // without following links immediately before it is changed.
+        for entry in &plan.removals {
+            self.remove_workspace_entry(entry)?;
+        }
 
-        // 1. Delete workspace files not present in the snapshot.
-        let mut existing: Vec<String> = Vec::new();
-        self.collect_rel_files(&self.workspace_root, &mut existing)?;
-        for rel in &existing {
-            if !desired.contains(rel.as_str()) {
-                let abs = self.workspace_root.join(rel_to_pathbuf(rel));
-                if abs.exists() {
-                    fs::remove_file(&abs).map_err(|e| {
-                        CoreError::from(e).with_context(format!("deleting {rel} during restore"))
+        for directory in &plan.directories {
+            match fs::symlink_metadata(directory) {
+                Ok(metadata) if metadata.file_type().is_dir() => {}
+                Ok(_) => {
+                    return Err(CoreError::conflict(format!(
+                        "restore directory changed during apply: {}",
+                        directory.display()
+                    )))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(directory).map_err(|error| {
+                        CoreError::from(error).with_context(format!(
+                            "creating restore directory {}",
+                            directory.display()
+                        ))
                     })?;
+                }
+                Err(error) => return Err(CoreError::from(error)),
+            }
+        }
+
+        for write in plan.writes {
+            // A leaf link that appears after preflight must not be followed or
+            // atomically replaced. The helper repeats this check at rename time.
+            atomic_write_file(
+                &write.path,
+                &write.bytes,
+                &format!("restored workspace file {}", write.relative),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn build_restore_plan(&self, manifest: &CheckpointManifest) -> Result<RestorePlan> {
+        let active_files: Vec<_> = manifest
+            .files
+            .iter()
+            .filter(|(path, _)| classify_stored_path(path) == StoredPathClass::Active)
+            .collect();
+        let desired: BTreeSet<&str> = active_files.iter().map(|(path, _)| path.as_str()).collect();
+        let desired_directories = desired_directories(&desired);
+
+        let mut entries = Vec::new();
+        self.collect_workspace_entries(&self.workspace_root, &mut entries)?;
+        let mut removals = Vec::new();
+        for entry in entries {
+            let keep = match entry.kind {
+                WorkspaceEntryKind::Directory => {
+                    desired_directories.contains(entry.relative.as_str())
+                        || self.directory_contains_protected_state(&entry.path)?
+                }
+                WorkspaceEntryKind::File => desired.contains(entry.relative.as_str()),
+                WorkspaceEntryKind::LinkOrSpecial => false,
+            };
+            if !keep {
+                removals.push(entry);
+            }
+        }
+        removals.sort_by(|left, right| {
+            path_depth(&right.relative)
+                .cmp(&path_depth(&left.relative))
+                .then_with(|| right.relative.cmp(&left.relative))
+        });
+        self.preflight_removals(&removals)?;
+
+        // Refuse a plan whose required path is blocked by a link or by a
+        // directory that cannot be replaced because it contains protected
+        // state. This must precede every workspace mutation.
+        for relative in desired.iter().chain(desired_directories.iter()) {
+            self.preflight_required_path(relative)?;
+        }
+
+        let mut directories: Vec<PathBuf> = desired_directories
+            .iter()
+            .map(|path| lexical_workspace_path(&self.workspace_root, path))
+            .collect();
+        directories.sort_by_key(|path| path.components().count());
+
+        let mut writes = Vec::with_capacity(active_files.len());
+        for (relative, hash) in active_files {
+            writes.push(RestoreWrite {
+                relative: relative.clone(),
+                path: lexical_workspace_path(&self.workspace_root, relative),
+                bytes: self.read_blob(hash)?,
+            });
+        }
+
+        Ok(RestorePlan {
+            removals,
+            directories,
+            writes,
+        })
+    }
+
+    fn preflight_removals(&self, removals: &[WorkspaceEntry]) -> Result<()> {
+        let removal_paths: HashSet<&Path> =
+            removals.iter().map(|entry| entry.path.as_path()).collect();
+        for entry in removals
+            .iter()
+            .filter(|entry| entry.kind == WorkspaceEntryKind::Directory)
+        {
+            for child in fs::read_dir(&entry.path).map_err(|error| {
+                CoreError::from(error)
+                    .with_context(format!("preflighting removal of {}", entry.relative))
+            })? {
+                let child = child.map_err(CoreError::from)?;
+                let child_path = child.path();
+                if self.is_ignored(&child_path) || !removal_paths.contains(child_path.as_path()) {
+                    return Err(CoreError::conflict(format!(
+                        "restore would replace directory {:?} containing protected or untracked state",
+                        entry.relative
+                    )));
                 }
             }
         }
-
-        // 2. Write / overwrite files from their blobs.
-        for (rel, hash) in &manifest.files {
-            let blob = self.read_blob(hash)?;
-            let abs = self.workspace_root.join(rel_to_pathbuf(rel));
-            if let Some(parent) = abs.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    CoreError::from(e).with_context(format!("creating dirs for {rel}"))
-                })?;
-            }
-            fs::write(&abs, &blob).map_err(|e| {
-                CoreError::from(e).with_context(format!("writing {rel} during restore"))
-            })?;
-        }
-
-        // 3. Prune now-empty directories (best effort, deepest first).
-        self.prune_empty_dirs(&self.workspace_root)?;
         Ok(())
+    }
+
+    fn directory_contains_protected_state(&self, directory: &Path) -> Result<bool> {
+        for entry in fs::read_dir(directory).map_err(|error| {
+            CoreError::from(error).with_context(format!("inspecting {}", directory.display()))
+        })? {
+            let entry = entry.map_err(CoreError::from)?;
+            let path = entry.path();
+            if self.is_ignored(&path) {
+                return Ok(true);
+            }
+            if entry.file_type().map_err(CoreError::from)?.is_dir()
+                && self.directory_contains_protected_state(&path)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn preflight_required_path(&self, relative: &str) -> Result<()> {
+        let mut current = self.workspace_root.clone();
+        let components: Vec<&str> = relative.split('/').collect();
+        for (index, component) in components.iter().enumerate() {
+            current.push(component);
+            let metadata = match fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(CoreError::from(error)
+                        .with_context(format!("preflighting restore path {relative}")))
+                }
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(CoreError::sandbox(format!(
+                    "restore path {relative:?} contains a filesystem link"
+                )));
+            }
+            if index + 1 == components.len()
+                && metadata.file_type().is_dir()
+                && self.directory_contains_protected_state(&current)?
+            {
+                return Err(CoreError::conflict(format!(
+                    "restore path {relative:?} is blocked by protected state"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_workspace_entry(&self, expected: &WorkspaceEntry) -> Result<()> {
+        let metadata = match fs::symlink_metadata(&expected.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(CoreError::from(error)),
+        };
+        let current_kind = WorkspaceEntryKind::from_metadata(&metadata);
+        if current_kind != expected.kind {
+            return Err(CoreError::conflict(format!(
+                "workspace entry changed during restore: {}",
+                expected.relative
+            )));
+        }
+        let result = if metadata.file_type().is_dir() {
+            fs::remove_dir(&expected.path)
+        } else {
+            fs::remove_file(&expected.path)
+        };
+        result.map_err(|error| {
+            CoreError::from(error)
+                .with_context(format!("removing {} during restore", expected.relative))
+        })
     }
 
     /// Recursively walk `dir`, content-addressing every file and writing its blob
@@ -281,12 +450,15 @@ impl CheckpointStore {
             if file_type.is_dir() {
                 self.snapshot_dir(&path, out)?;
             } else if file_type.is_file() {
+                let rel = self.rel_path(&path)?;
+                if classify_stored_path(&rel) != StoredPathClass::Active {
+                    return Err(invalid_stored_path(&rel));
+                }
                 let bytes = fs::read(&path).map_err(|e| {
                     CoreError::from(e).with_context(format!("reading file {}", path.display()))
                 })?;
                 let hash = content_hash(&bytes);
                 self.write_blob_if_absent(&hash, &bytes)?;
-                let rel = self.rel_path(&path)?;
                 out.push((rel, hash));
             }
             // symlinks and other special files are skipped intentionally.
@@ -294,11 +466,8 @@ impl CheckpointStore {
         Ok(())
     }
 
-    /// Collect the relative paths of all (non-ignored) files under `dir`.
-    fn collect_rel_files(&self, dir: &Path, out: &mut Vec<String>) -> Result<()> {
-        if !dir.exists() {
-            return Ok(());
-        }
+    /// Collect every non-protected entry without following filesystem links.
+    fn collect_workspace_entries(&self, dir: &Path, out: &mut Vec<WorkspaceEntry>) -> Result<()> {
         let entries = fs::read_dir(dir).map_err(|e| {
             CoreError::from(e).with_context(format!("reading dir {}", dir.display()))
         })?;
@@ -309,10 +478,24 @@ impl CheckpointStore {
                 continue;
             }
             let file_type = entry.file_type().map_err(CoreError::from)?;
+            let relative = self.rel_path(&path)?;
             if file_type.is_dir() {
-                self.collect_rel_files(&path, out)?;
-            } else if file_type.is_file() {
-                out.push(self.rel_path(&path)?);
+                out.push(WorkspaceEntry {
+                    relative,
+                    path: path.clone(),
+                    kind: WorkspaceEntryKind::Directory,
+                });
+                self.collect_workspace_entries(&path, out)?;
+            } else {
+                out.push(WorkspaceEntry {
+                    relative,
+                    path,
+                    kind: if file_type.is_file() {
+                        WorkspaceEntryKind::File
+                    } else {
+                        WorkspaceEntryKind::LinkOrSpecial
+                    },
+                });
             }
         }
         Ok(())
@@ -320,10 +503,19 @@ impl CheckpointStore {
 
     /// True if `path` is the store dir, inside it, or a `.git` directory.
     fn is_ignored(&self, path: &Path) -> bool {
-        if paths_equal(path, &self.store_dir) || path.starts_with(&self.store_dir) {
+        // Use lexical containment here. Canonicalizing an arbitrary workspace
+        // entry would follow a symlink and could incorrectly classify the link
+        // itself as protected internal state.
+        if path == self.store_dir || path.starts_with(&self.store_dir) {
             return true;
         }
-        matches!(path.file_name().and_then(|n| n.to_str()), Some(".git"))
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.eq_ignore_ascii_case(".na")
+                    || name.eq_ignore_ascii_case(".na-vcs")
+                    || name.eq_ignore_ascii_case(".git")
+            })
     }
 
     /// Relative path from the workspace root, normalized to forward slashes.
@@ -338,7 +530,15 @@ impl CheckpointStore {
         let mut parts: Vec<String> = Vec::new();
         for comp in rel.components() {
             match comp {
-                Component::Normal(os) => parts.push(os.to_string_lossy().into_owned()),
+                Component::Normal(os) => {
+                    let part = os.to_str().ok_or_else(|| {
+                        CoreError::invalid_input(format!(
+                            "checkpoint cannot represent non-UTF-8 file name in {}",
+                            path.display()
+                        ))
+                    })?;
+                    parts.push(part.to_owned());
+                }
                 // workspace-relative paths should never contain these, but be safe.
                 Component::CurDir => {}
                 _ => {
@@ -352,61 +552,23 @@ impl CheckpointStore {
         Ok(parts.join("/"))
     }
 
-    fn blob_path(&self, hash: &str) -> PathBuf {
-        self.objects_dir.join(hash)
-    }
-
     fn write_blob_if_absent(&self, hash: &str, bytes: &[u8]) -> Result<()> {
-        let path = self.blob_path(hash);
-        if path.exists() {
-            return Ok(());
-        }
-        fs::write(&path, bytes)
-            .map_err(|e| CoreError::from(e).with_context(format!("writing blob {hash}")))?;
-        Ok(())
+        write_content_object(&self.objects_dir, hash, bytes)
     }
 
     fn read_blob(&self, hash: &str) -> Result<Vec<u8>> {
-        let path = self.blob_path(hash);
-        fs::read(&path).map_err(|e| {
-            CoreError::from(e).with_context(format!("reading blob {hash} (corrupt store?)"))
-        })
+        read_content_object(&self.objects_dir, hash)
     }
 
-    fn append_manifest(&self, manifest: &CheckpointManifest) -> Result<()> {
-        let line = serde_json::to_string(manifest)?;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.manifest_path)
-            .map_err(|e| CoreError::from(e).with_context("opening checkpoints.jsonl for append"))?;
-        file.write_all(line.as_bytes())
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|e| CoreError::from(e).with_context("appending checkpoint manifest"))?;
-        Ok(())
-    }
-
-    /// Rewrite the whole manifest log from the current set (used after a delete).
-    /// Writes a temp file then renames for atomicity.
-    fn persist_manifests(&self) -> Result<()> {
-        let tmp = self.manifest_path.with_extension("jsonl.tmp");
-        {
-            let mut file = fs::File::create(&tmp)
-                .map_err(|e| CoreError::from(e).with_context("creating checkpoints temp file"))?;
-            for m in &self.manifests {
-                let line = serde_json::to_string(m)?;
-                file.write_all(line.as_bytes())
-                    .and_then(|_| file.write_all(b"\n"))
-                    .map_err(|e| {
-                        CoreError::from(e).with_context("writing checkpoints temp file")
-                    })?;
-            }
-            file.flush()
-                .map_err(|e| CoreError::from(e).with_context("flushing checkpoints temp file"))?;
+    /// Rewrite the complete log with one atomic replacement. This avoids a torn
+    /// final JSON line if a checkpoint creation is interrupted.
+    fn persist_manifest_set(&self, manifests: &[CheckpointManifest]) -> Result<()> {
+        let mut bytes = Vec::new();
+        for manifest in manifests {
+            serde_json::to_writer(&mut bytes, manifest)?;
+            bytes.push(b'\n');
         }
-        fs::rename(&tmp, &self.manifest_path)
-            .map_err(|e| CoreError::from(e).with_context("replacing checkpoints.jsonl"))?;
-        Ok(())
+        atomic_write_file(&self.manifest_path, &bytes, "checkpoint manifest log")
     }
 
     /// Remove blob objects no longer referenced by any remaining manifest.
@@ -435,70 +597,116 @@ impl CheckpointStore {
         }
         Ok(())
     }
+}
 
-    /// Recursively remove empty directories under `dir` (but never `dir` itself
-    /// or the store dir). Best-effort: errors are ignored so a restore is not
-    /// derailed by a directory we cannot remove.
-    fn prune_empty_dirs(&self, dir: &Path) -> Result<()> {
-        let read = match fs::read_dir(dir) {
-            Ok(r) => r,
-            Err(_) => return Ok(()),
-        };
-        let mut subdirs: Vec<PathBuf> = Vec::new();
-        for entry in read.flatten() {
-            let path = entry.path();
-            if self.is_ignored(&path) {
-                continue;
-            }
-            if path.is_dir() {
-                subdirs.push(path);
-            }
+#[derive(Debug)]
+struct RestorePlan {
+    removals: Vec<WorkspaceEntry>,
+    directories: Vec<PathBuf>,
+    writes: Vec<RestoreWrite>,
+}
+
+#[derive(Debug)]
+struct RestoreWrite {
+    relative: String,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct WorkspaceEntry {
+    relative: String,
+    path: PathBuf,
+    kind: WorkspaceEntryKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceEntryKind {
+    File,
+    Directory,
+    LinkOrSpecial,
+}
+
+impl WorkspaceEntryKind {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        if metadata.file_type().is_dir() {
+            Self::Directory
+        } else if metadata.file_type().is_file() {
+            Self::File
+        } else {
+            Self::LinkOrSpecial
         }
-        for sub in subdirs {
-            self.prune_empty_dirs(&sub)?;
-            // Try to remove if it is now empty.
-            if let Ok(mut it) = fs::read_dir(&sub) {
-                if it.next().is_none() {
-                    let _ = fs::remove_dir(&sub);
-                }
-            }
-        }
-        Ok(())
     }
 }
 
-/// Convert a forward-slash relative path into a native [`PathBuf`].
-fn rel_to_pathbuf(rel: &str) -> PathBuf {
-    let mut pb = PathBuf::new();
-    for part in rel.split('/') {
-        if !part.is_empty() {
-            pb.push(part);
+fn desired_directories<'a>(files: &BTreeSet<&'a str>) -> BTreeSet<&'a str> {
+    let mut directories = BTreeSet::new();
+    for file in files {
+        let mut end = 0;
+        while let Some(offset) = file[end..].find('/') {
+            end += offset;
+            directories.insert(&file[..end]);
+            end += 1;
         }
     }
-    pb
+    directories
 }
 
-/// Compare two paths by their canonical form when possible, falling back to a
-/// literal comparison (canonicalize fails if the path does not exist yet).
-fn paths_equal(a: &Path, b: &Path) -> bool {
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(ca), Ok(cb)) => ca == cb,
-        _ => a == b,
+fn lexical_workspace_path(root: &Path, relative: &str) -> PathBuf {
+    let mut path = root.to_path_buf();
+    path.extend(relative.split('/'));
+    path
+}
+
+fn path_depth(relative: &str) -> usize {
+    relative.bytes().filter(|byte| *byte == b'/').count()
+}
+
+fn absolute_store_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
     }
+    std::env::current_dir()
+        .map(|current| current.join(path))
+        .map_err(|error| CoreError::from(error).with_context("resolving checkpoint store path"))
 }
 
-/// Read and parse all manifests from `path` (missing file => empty vec). Stored
-/// in a `BTreeMap` keyed by id first so a re-appended id (should not happen, but
-/// be defensive) keeps the last version, then flattened preserving file order by
-/// `created_ms`.
+/// Read and validate all manifests from `path` (missing file => empty vec).
 fn load_manifests(path: &Path) -> Result<Vec<CheckpointManifest>> {
-    if !path.exists() {
-        return Ok(Vec::new());
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_file() => {
+            return Err(CoreError::sandbox(
+                "checkpoint manifest is not a regular file",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(CoreError::from(error).with_context("reading checkpoints.jsonl metadata"));
+        }
     }
     let file = fs::File::open(path)
         .map_err(|e| CoreError::from(e).with_context("opening checkpoints.jsonl"))?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(CoreError::sandbox(
+                "checkpoint manifest changed to a filesystem link while opening",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => return Err(CoreError::from(error)),
+    }
+    let opened = file
+        .metadata()
+        .map_err(|e| CoreError::from(e).with_context("inspecting open checkpoints.jsonl"))?;
+    if !opened.file_type().is_file() {
+        return Err(CoreError::sandbox(
+            "checkpoint manifest changed while it was opened",
+        ));
+    }
     let reader = BufReader::new(file);
-    let mut by_id: BTreeMap<String, CheckpointManifest> = BTreeMap::new();
+    let mut out = Vec::new();
+    let mut ids = HashSet::new();
     for (lineno, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| {
             CoreError::from(e)
@@ -514,11 +722,170 @@ fn load_manifests(path: &Path) -> Result<Vec<CheckpointManifest>> {
                 lineno + 1
             ))
         })?;
-        by_id.insert(manifest.id.0.clone(), manifest);
+        if manifest.id.0.is_empty() || !ids.insert(manifest.id.0.clone()) {
+            return Err(CoreError::new(
+                na_common::ErrorKind::Serialization,
+                format!("invalid or duplicate checkpoint id at line {}", lineno + 1),
+            ));
+        }
+        let mut paths = HashSet::new();
+        for (relative_path, hash) in &manifest.files {
+            if classify_stored_path(relative_path) == StoredPathClass::Invalid {
+                return Err(invalid_stored_path(relative_path)
+                    .with_context(format!("checkpoint manifest line {}", lineno + 1)));
+            }
+            if !paths.insert(relative_path.as_str()) {
+                return Err(CoreError::new(
+                    na_common::ErrorKind::Serialization,
+                    format!(
+                        "duplicate checkpoint path {relative_path:?} at line {}",
+                        lineno + 1
+                    ),
+                ));
+            }
+            validate_content_hash(hash).map_err(|error| {
+                error.with_context(format!("checkpoint manifest line {}", lineno + 1))
+            })?;
+        }
+        validate_manifest_ancestor_conflicts(&manifest.files).map_err(|error| {
+            error.with_context(format!("checkpoint manifest line {}", lineno + 1))
+        })?;
+        validate_windows_path_aliases(&manifest.files).map_err(|error| {
+            error.with_context(format!("checkpoint manifest line {}", lineno + 1))
+        })?;
+        out.push(manifest);
     }
-    let mut out: Vec<CheckpointManifest> = by_id.into_values().collect();
     out.sort_by_key(|m| m.created_ms);
     Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoredPathClass {
+    Active,
+    ProtectedLegacy,
+    Invalid,
+}
+
+fn classify_stored_path(path: &str) -> StoredPathClass {
+    if path.is_empty() || path.contains('\0') {
+        return StoredPathClass::Invalid;
+    }
+    let mut protected = false;
+    for part in path.split('/') {
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.contains(':')
+            || part.contains('\\')
+        {
+            return StoredPathClass::Invalid;
+        }
+        if is_reserved_component(part) {
+            protected = true;
+        }
+    }
+    if protected {
+        StoredPathClass::ProtectedLegacy
+    } else {
+        StoredPathClass::Active
+    }
+}
+
+fn is_reserved_component(component: &str) -> bool {
+    component.eq_ignore_ascii_case(".na")
+        || component.eq_ignore_ascii_case(".na-vcs")
+        || component.eq_ignore_ascii_case(".git")
+}
+
+fn validate_manifest_ancestor_conflicts(files: &[(String, String)]) -> Result<()> {
+    let active: HashSet<&str> = files
+        .iter()
+        .filter_map(|(path, _)| {
+            (classify_stored_path(path) == StoredPathClass::Active).then_some(path.as_str())
+        })
+        .collect();
+    for path in &active {
+        let mut end = 0;
+        while let Some(offset) = path[end..].find('/') {
+            end += offset;
+            if active.contains(&path[..end]) {
+                return Err(CoreError::new(
+                    na_common::ErrorKind::Serialization,
+                    format!("checkpoint paths {:?} and {path:?} conflict", &path[..end]),
+                ));
+            }
+            end += 1;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_path_key(path: &str) -> String {
+    path.split('/')
+        .map(|component| component.trim_end_matches([' ', '.']).to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[cfg(windows)]
+fn validate_windows_path_aliases(files: &[(String, String)]) -> Result<()> {
+    let mut keys = HashSet::new();
+    for (path, _) in files
+        .iter()
+        .filter(|(path, _)| classify_stored_path(path) == StoredPathClass::Active)
+    {
+        let key = windows_path_key(path);
+        let has_trimmed_component = path
+            .split('/')
+            .any(|component| component.trim_end_matches([' ', '.']) != component);
+        if has_trimmed_component
+            || key.split('/').any(|component| {
+                let stem = component.split('.').next().unwrap_or(component);
+                matches!(
+                    stem,
+                    "con"
+                        | "prn"
+                        | "aux"
+                        | "nul"
+                        | "com1"
+                        | "com2"
+                        | "com3"
+                        | "com4"
+                        | "com5"
+                        | "com6"
+                        | "com7"
+                        | "com8"
+                        | "com9"
+                        | "lpt1"
+                        | "lpt2"
+                        | "lpt3"
+                        | "lpt4"
+                        | "lpt5"
+                        | "lpt6"
+                        | "lpt7"
+                        | "lpt8"
+                        | "lpt9"
+                )
+            })
+            || !keys.insert(key)
+        {
+            return Err(invalid_stored_path(path));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn validate_windows_path_aliases(_files: &[(String, String)]) -> Result<()> {
+    Ok(())
+}
+
+fn invalid_stored_path(path: &str) -> CoreError {
+    CoreError::new(
+        na_common::ErrorKind::Serialization,
+        format!("invalid checkpoint path {path:?}"),
+    )
 }
 
 #[cfg(test)]
@@ -771,6 +1138,62 @@ mod tests {
     }
 
     #[test]
+    fn manifest_rejects_object_path_traversal_and_reserved_targets() {
+        let ws = TempDir::new("ws-bad-manifest");
+        let st = TempDir::new("store-bad-manifest");
+        fs::create_dir_all(st.path().join("objects")).unwrap();
+        let manifest = CheckpointManifest {
+            id: CheckpointId::new(),
+            label: "crafted".into(),
+            created_ms: now_millis(),
+            files: vec![("leak.md".into(), "../../../outside-file".into())],
+        };
+        fs::write(
+            st.path().join("checkpoints.jsonl"),
+            format!("{}\n", serde_json::to_string(&manifest).unwrap()),
+        )
+        .unwrap();
+
+        let error = match CheckpointStore::open(ws.path(), st.path()) {
+            Ok(_) => panic!("crafted manifest should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+    }
+
+    #[test]
+    fn corrupt_blob_aborts_restore_before_workspace_mutation() {
+        let ws = TempDir::new("ws-corrupt-blob");
+        let st = TempDir::new("store-corrupt-blob");
+        let file = ws.path().join("chapter.md");
+        fs::write(&file, "snapshot").unwrap();
+        let mut store = CheckpointStore::open(ws.path(), st.path()).unwrap();
+        let checkpoint = store.create("snapshot").unwrap();
+        let hash = store.manifests[0].files[0].1.clone();
+        fs::write(st.path().join("objects").join(hash), "corrupt").unwrap();
+        fs::write(&file, "current unsaved work").unwrap();
+
+        let error = store.restore(&checkpoint).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+        assert_eq!(fs::read_to_string(file).unwrap(), "current unsaved work");
+    }
+
+    #[test]
+    fn failed_delete_persistence_restores_in_memory_manifest() {
+        let ws = TempDir::new("ws-delete-failure");
+        let st = TempDir::new("store-delete-failure");
+        fs::write(ws.path().join("chapter.md"), "snapshot").unwrap();
+        let mut store = CheckpointStore::open(ws.path(), st.path()).unwrap();
+        let checkpoint = store.create("keep").unwrap();
+        fs::remove_file(&store.manifest_path).unwrap();
+        fs::create_dir(&store.manifest_path).unwrap();
+
+        assert!(store.delete(&checkpoint).is_err());
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.list()[0].id, checkpoint);
+    }
+
+    #[test]
     fn git_dir_is_ignored() {
         let ws = TempDir::new("ws");
         let st = TempDir::new("store");
@@ -784,5 +1207,330 @@ mod tests {
         let manifest = cs.manifests.iter().find(|m| m.id == id).unwrap();
         assert_eq!(manifest.files.len(), 1, ".git contents must be skipped");
         assert_eq!(manifest.files[0].0, "real.txt");
+    }
+
+    #[test]
+    fn all_reserved_state_directories_are_skipped_and_store_reopens() {
+        let ws = TempDir::new("ws-reserved");
+        let st = TempDir::new("store-reserved");
+        for directory in [".na-vcs", ".NA", ".GIT"] {
+            fs::create_dir_all(ws.path().join(directory)).unwrap();
+            fs::write(ws.path().join(directory).join("state"), "internal").unwrap();
+        }
+        fs::write(ws.path().join("chapter.md"), "manuscript").unwrap();
+        {
+            let mut store = CheckpointStore::open(ws.path(), st.path()).unwrap();
+            let checkpoint = store.create("clean").unwrap();
+            let manifest = store
+                .manifests
+                .iter()
+                .find(|manifest| manifest.id == checkpoint)
+                .unwrap();
+            assert_eq!(manifest.files.len(), 1);
+            assert_eq!(manifest.files[0].0, "chapter.md");
+        }
+
+        assert_eq!(
+            CheckpointStore::open(ws.path(), st.path())
+                .unwrap()
+                .list()
+                .len(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[test]
+    fn restore_rejects_parent_symlink_escape() {
+        let ws = TempDir::new("ws-link");
+        let st = TempDir::new("store-link");
+        let outside = TempDir::new("outside-link");
+        let root = ws.path();
+        fs::create_dir_all(root.join("chapter")).unwrap();
+        fs::write(root.join("chapter/one.md"), "snapshot").unwrap();
+        let mut store = CheckpointStore::open(root, st.path()).unwrap();
+        let checkpoint = store.create("before-link").unwrap();
+
+        fs::remove_dir_all(root.join("chapter")).unwrap();
+        let link = root.join("chapter");
+        if let Err(error) = symlink_dir(outside.path(), &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        let error = store.restore(&checkpoint).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        assert!(!outside.path().join("one.md").exists());
+        let _ = fs::remove_file(link);
+    }
+
+    #[test]
+    fn failed_undo_keeps_history_on_the_current_checkpoint() {
+        let ws = TempDir::new("ws-undo-link");
+        let st = TempDir::new("store-undo-link");
+        let outside = TempDir::new("outside-undo-link");
+        let root = ws.path();
+        fs::create_dir_all(root.join("chapter")).unwrap();
+        fs::write(root.join("chapter/one.md"), "v1").unwrap();
+        let mut store = CheckpointStore::open(root, st.path()).unwrap();
+        store.create("v1").unwrap();
+        fs::write(root.join("chapter/one.md"), "v2").unwrap();
+        let current = store.create("v2").unwrap();
+
+        fs::remove_dir_all(root.join("chapter")).unwrap();
+        let link = root.join("chapter");
+        if let Err(error) = symlink_dir(outside.path(), &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        assert!(store.undo().is_err());
+        assert_eq!(store.current(), Some(&current));
+        assert!(store.redo_stack.is_empty());
+        assert!(!outside.path().join("one.md").exists());
+        let _ = fs::remove_file(link);
+    }
+
+    #[test]
+    fn restore_never_follows_leaf_symlink() {
+        let ws = TempDir::new("ws-leaf-link");
+        let st = TempDir::new("store-leaf-link");
+        let outside = TempDir::new("outside-leaf-link");
+        let root = ws.path();
+        fs::write(root.join("chapter.md"), "snapshot").unwrap();
+        let mut store = CheckpointStore::open(root, st.path()).unwrap();
+        let checkpoint = store.create("snapshot").unwrap();
+
+        fs::remove_file(root.join("chapter.md")).unwrap();
+        let target = outside.path().join("target.md");
+        fs::write(&target, "outside").unwrap();
+        let link = root.join("chapter.md");
+        if let Err(error) = symlink_file(&target, &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        let error = store.restore(&checkpoint).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        assert_eq!(fs::read_to_string(target).unwrap(), "outside");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let _ = fs::remove_file(link);
+    }
+
+    #[test]
+    fn restore_removes_extra_symlink_without_touching_target() {
+        let ws = TempDir::new("ws-extra-link");
+        let st = TempDir::new("store-extra-link");
+        let outside = TempDir::new("outside-extra-link");
+        let root = ws.path();
+        fs::write(root.join("kept.md"), "snapshot").unwrap();
+        let mut store = CheckpointStore::open(root, st.path()).unwrap();
+        let checkpoint = store.create("snapshot").unwrap();
+
+        let target = outside.path().join("target.md");
+        fs::write(&target, "outside").unwrap();
+        let link = root.join("extra.md");
+        if let Err(error) = symlink_file(&target, &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        store.restore(&checkpoint).unwrap();
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "outside");
+    }
+
+    #[test]
+    fn restore_handles_file_directory_type_changes() {
+        let ws = TempDir::new("ws-type-changes");
+        let st = TempDir::new("store-type-changes");
+        let root = ws.path();
+        fs::write(root.join("as_file"), "file snapshot").unwrap();
+        fs::create_dir(root.join("as_dir")).unwrap();
+        fs::write(root.join("as_dir/chapter.md"), "nested snapshot").unwrap();
+        let mut store = CheckpointStore::open(root, st.path()).unwrap();
+        let checkpoint = store.create("snapshot").unwrap();
+
+        fs::remove_file(root.join("as_file")).unwrap();
+        fs::create_dir(root.join("as_file")).unwrap();
+        fs::write(root.join("as_file/extra.md"), "extra").unwrap();
+        fs::remove_dir_all(root.join("as_dir")).unwrap();
+        fs::write(root.join("as_dir"), "blocking file").unwrap();
+
+        store.restore(&checkpoint).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("as_file")).unwrap(),
+            "file snapshot"
+        );
+        assert!(root.join("as_dir").is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join("as_dir/chapter.md")).unwrap(),
+            "nested snapshot"
+        );
+    }
+
+    #[test]
+    fn protected_state_blocks_directory_replacement_before_mutation() {
+        let ws = TempDir::new("ws-protected-blocker");
+        let st = TempDir::new("store-protected-blocker");
+        let root = ws.path();
+        fs::write(root.join("container"), "snapshot").unwrap();
+        fs::write(root.join("other.md"), "snapshot").unwrap();
+        let mut store = CheckpointStore::open(root, st.path()).unwrap();
+        let checkpoint = store.create("snapshot").unwrap();
+
+        fs::remove_file(root.join("container")).unwrap();
+        fs::create_dir_all(root.join("container/.na-vcs")).unwrap();
+        fs::write(root.join("container/.na-vcs/state"), "protected").unwrap();
+        fs::write(root.join("other.md"), "current").unwrap();
+        fs::write(root.join("extra.md"), "must survive failure").unwrap();
+
+        let error = store.restore(&checkpoint).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Conflict), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.join("other.md")).unwrap(),
+            "current"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("extra.md")).unwrap(),
+            "must survive failure"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("container/.na-vcs/state")).unwrap(),
+            "protected"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_ancestor_conflicts() {
+        let ws = TempDir::new("ws-ancestor-conflict");
+        let st = TempDir::new("store-ancestor-conflict");
+        fs::create_dir_all(st.path().join("objects")).unwrap();
+        let hash = content_hash(b"data");
+        let manifest = CheckpointManifest {
+            id: CheckpointId::new(),
+            label: "crafted".into(),
+            created_ms: now_millis(),
+            files: vec![
+                ("chapter".into(), hash.clone()),
+                ("chapter/one.md".into(), hash),
+            ],
+        };
+        fs::write(
+            st.path().join("checkpoints.jsonl"),
+            format!("{}\n", serde_json::to_string(&manifest).unwrap()),
+        )
+        .unwrap();
+
+        let error = match CheckpointStore::open(ws.path(), st.path()) {
+            Ok(_) => panic!("ancestor conflict should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.is(na_common::ErrorKind::Serialization), "{error}");
+    }
+
+    #[test]
+    fn legacy_reserved_entries_load_but_restore_preserves_current_state() {
+        let ws = TempDir::new("ws-legacy-reserved");
+        let st = TempDir::new("store-legacy-reserved");
+        fs::create_dir_all(st.path().join("objects")).unwrap();
+        fs::create_dir_all(ws.path().join("nested/.na-vcs")).unwrap();
+        fs::write(ws.path().join("nested/.na-vcs/state"), "current").unwrap();
+        let legacy_hash = content_hash(b"legacy");
+        write_content_object(&st.path().join("objects"), &legacy_hash, b"legacy").unwrap();
+        let manifest = CheckpointManifest {
+            id: CheckpointId::new(),
+            label: "legacy".into(),
+            created_ms: now_millis(),
+            files: vec![("nested/.na-vcs/state".into(), legacy_hash)],
+        };
+        fs::write(
+            st.path().join("checkpoints.jsonl"),
+            format!("{}\n", serde_json::to_string(&manifest).unwrap()),
+        )
+        .unwrap();
+
+        let mut store = CheckpointStore::open(ws.path(), st.path()).unwrap();
+        store.restore(&manifest.id).unwrap();
+        assert_eq!(
+            fs::read_to_string(ws.path().join("nested/.na-vcs/state")).unwrap(),
+            "current"
+        );
+    }
+
+    #[test]
+    fn manifest_symlinks_are_rejected_including_dangling_links() {
+        for dangling in [false, true] {
+            let ws = TempDir::new("ws-manifest-link");
+            let st = TempDir::new("store-manifest-link");
+            fs::create_dir_all(st.path().join("objects")).unwrap();
+            let target = st.path().join("outside.jsonl");
+            if !dangling {
+                fs::write(&target, "outside").unwrap();
+            }
+            let link = st.path().join("checkpoints.jsonl");
+            if let Err(error) = symlink_file(&target, &link) {
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    return;
+                }
+                panic!("creating test symlink failed: {error}");
+            }
+
+            let error = match CheckpointStore::open(ws.path(), st.path()) {
+                Ok(_) => panic!("manifest symlink should be rejected"),
+                Err(error) => error,
+            };
+            assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+            if !dangling {
+                assert_eq!(fs::read_to_string(target).unwrap(), "outside");
+            }
+            let _ = fs::remove_file(link);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_rejects_non_utf8_unrepresentable_file_name() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let ws = TempDir::new("ws-non-utf8");
+        let st = TempDir::new("store-non-utf8");
+        let name = std::ffi::OsString::from_vec(vec![b'f', 0xff]);
+        fs::write(ws.path().join(name), "data").unwrap();
+        let mut store = CheckpointStore::open(ws.path(), st.path()).unwrap();
+
+        let error = store.create("snapshot").unwrap_err();
+        assert!(error.is(na_common::ErrorKind::InvalidInput), "{error}");
+        assert!(store.list().is_empty());
     }
 }

@@ -11,6 +11,7 @@
   --paper-lo:   #e0d6c1;
   --paper-edge: #cfc1a3;
   --paper-light: #faf7f1;
+  --paper-fibre: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.80' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='0.035'/></svg>");
 
   /* 墨 — warm ink neutrals */
   --ink:       #21201b;
@@ -42,6 +43,14 @@
   /* hairlines */
   --line:        #d2c6af;
   --line-strong: #c3b598;
+
+  /* 书脊仍属宣纸体系；深墨负责结构，朱砂只作点色。 */
+  --nav-bg:          var(--paper-lo);
+  --nav-bg-hover:    rgba(33, 32, 27, 0.05);
+  --nav-bg-active:   var(--cn-wash);
+  --nav-text:        var(--ink);
+  --nav-text-muted:  var(--ink-3);
+  --nav-focus:       var(--cn);
 
   /* shadows — warm, layered */
   --shadow:    0 2px 8px rgba(65, 50, 28, 0.09),
@@ -90,6 +99,41 @@
   --e-quint: cubic-bezier(0.22, 1.00, 0.36, 1);
   --e-press: cubic-bezier(0.65, 0.00, 0.35, 1);
 
+  /* Legacy component aliases. Keep these until legacy.css is retired. */
+  --paper-panel:  var(--paper-hi);
+  --paper-raised: var(--paper-light);
+  --paper-sunken: var(--paper-lo);
+  --cinnabar:        var(--cn);
+  --cinnabar-bright: var(--cn-hi);
+  --cinnabar-deep:   var(--cn-deep);
+  --cinnabar-wash:   var(--cn-wash);
+  --cinnabar-wash-2: var(--cn-wash-2);
+  --ink-muted: var(--ink-2);
+  --ink-faint: var(--ink-3);
+  --ink-soft:  var(--ink-4);
+  --line-soft: rgba(195, 181, 152, 0.62);
+  --radius:    var(--r);
+  --radius-sm: var(--r-sm);
+  --radius-lg: var(--r-lg);
+  --shadow-inset: inset 0 1px 2px rgba(55, 38, 18, 0.06);
+  --shadow-raised: var(--shadow);
+  --shadow-slip:   var(--shadow);
+  --dur-5: 0.56s;
+  --dur-ink: 0.72s;
+  --ease-out:    var(--e-out);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+  --ease-brush:  cubic-bezier(0.22, 0.8, 0.32, 1);
+  --ease-spring: var(--e-quint);
+  --seal-frame: 1.5px;
+
+  /* Semantic aliases used by newer settings and provider surfaces. */
+  --surface-raised: var(--paper-light);
+  --text-primary:   var(--ink);
+  --text-muted:     var(--ink-3);
+  --status-success: var(--teal);
+  --status-warning: var(--gold);
+  --status-danger:  var(--cn);
+
   color-scheme: light;
   font-family: var(--sans);
   font-size: 15px;
@@ -106,18 +150,29 @@ body {
   background-image:
     radial-gradient(130% 90% at 10% 5%,  var(--paper-hi), transparent 52%),
     radial-gradient(110% 100% at 96% 94%, rgba(80,58,28,0.08), transparent 58%),
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.80' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='0.035'/></svg>");
+    var(--paper-fibre);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  user-select: none;
-  cursor: default;
+  user-select: text;
   overflow: hidden;
 }
 
 ::selection {
   background: var(--cn-wash-2);
   color: var(--ink);
+}
+
+.a11y-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 /* ── scrollbars ── */
@@ -139,13 +194,13 @@ h1, h2, h3, h4 {
   font-family: var(--serif);
   font-weight: 600;
   color: var(--ink);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   line-height: 1.3;
   margin: 0;
 }
-h1 { font-size: clamp(26px, 3vw, 34px); font-weight: 700; letter-spacing: -0.02em; }
-h2 { font-size: clamp(20px, 2.4vw, 26px); }
-h3 { font-size: clamp(16px, 1.8vw, 20px); }
+h1 { font-size: 34px; font-weight: 700; }
+h2 { font-size: 26px; }
+h3 { font-size: 20px; }
 h4 { font-size: 15px; font-weight: 600; }
 
 p {
@@ -160,6 +215,7 @@ button {
   font-family: inherit;
   color: inherit;
   cursor: pointer;
+  user-select: none;
 }
 
 input, textarea, select {
@@ -173,7 +229,14 @@ input, textarea, select {
   border-radius: var(--r-sm);
 }
 
-button, a, input, textarea {
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--cn) !important;
+  outline-offset: 2px;
+}
+
+button, a, input, textarea, select {
   transition:
     background  var(--e-out) var(--dur-2),
     border-color var(--e-out) var(--dur-2),

@@ -24,6 +24,7 @@ use std::fs;
 use na_common::{json, CoreError, Json, Result};
 use na_sandbox::Capability;
 
+use super::fs::{atomic_write, ensure_user_workspace_path};
 use crate::tool::{BoxFuture, Tool, ToolContext, ToolResult, ToolSpec};
 
 /// Edit a file using anchor / full / structured modes.
@@ -67,6 +68,7 @@ impl Tool for EditFileTool {
             let path = require_str(&args, "path")?;
             let mode = require_str(&args, "mode")?;
             let abs = ctx.jail.resolve(path)?;
+            ensure_user_workspace_path(ctx, &abs)?;
 
             let mode_owned = mode.to_string();
             let new_content = match mode {
@@ -94,8 +96,7 @@ impl Tool for EditFileTool {
                     CoreError::from(e).with_context(format!("creating dirs for {path}"))
                 })?;
             }
-            fs::write(&abs, new_content.as_bytes())
-                .map_err(|e| CoreError::from(e).with_context(format!("writing {path}")))?;
+            atomic_write(&abs, new_content.as_bytes(), path)?;
 
             let bytes = new_content.len();
             let lines = new_content.split('\n').count();

@@ -6,7 +6,7 @@
 //! arranged into a tree so cancelling a session cancels every in-flight tool.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::Notify;
 
@@ -15,7 +15,7 @@ use crate::error::{CoreError, Result};
 struct Inner {
     cancelled: AtomicBool,
     notify: Notify,
-    children: Mutex<Vec<Arc<Inner>>>,
+    children: Mutex<Vec<Weak<Inner>>>,
 }
 
 /// A cheaply-cloneable handle to a cancellation signal.
@@ -89,8 +89,9 @@ impl CancellationToken {
                 .inner
                 .children
                 .lock()
-                .expect("cancel children poisoned");
-            guard.push(child.clone());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.retain(|existing| existing.strong_count() > 0);
+            guard.push(Arc::downgrade(&child));
         }
         // If the parent was already cancelled, propagate immediately.
         if self.is_cancelled() {
@@ -111,8 +112,13 @@ fn cancel_inner(inner: &Arc<Inner>) {
     if !inner.cancelled.swap(true, Ordering::SeqCst) {
         inner.notify.notify_waiters();
         let children = {
-            let guard = inner.children.lock().expect("cancel children poisoned");
-            guard.clone()
+            let mut guard = inner
+                .children
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let children: Vec<_> = guard.iter().filter_map(Weak::upgrade).collect();
+            guard.retain(|child| child.strong_count() > 0);
+            children
         };
         for child in &children {
             cancel_inner(child);
@@ -196,5 +202,32 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), t.cancelled())
             .await
             .expect("should be immediate");
+    }
+
+    #[test]
+    fn completed_children_are_pruned_instead_of_accumulating() {
+        let parent = CancellationToken::new();
+        for _ in 0..1_000 {
+            drop(parent.child());
+        }
+
+        let live = parent.child();
+        assert_eq!(
+            parent
+                .inner
+                .children
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
+        drop(live);
+        parent.cancel();
+        assert!(parent
+            .inner
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
     }
 }

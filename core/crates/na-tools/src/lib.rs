@@ -76,7 +76,7 @@ pub use validate::validate;
 pub use hooks::{DenyToolHook, HookDecision, HookRegistry, LoggingHook, ToolHook};
 
 // ---- Real network seams (constructed & injected by the host) ----
-pub use http::HttpFetcher;
+pub use http::{HttpFetcher, SecureHttpFetcher};
 pub use mcp_stdio::{InMemoryTransport, McpTransport, StdioMcpClient, StdioTransport};
 
 // ---- Tool re-exports ----

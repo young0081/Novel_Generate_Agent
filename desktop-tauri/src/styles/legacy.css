@@ -116,9 +116,9 @@
 }
  .legacy-scope .health-dot--checking{
   background: var(--ink-faint);
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: legacy-status-pulse 1.4s ease-in-out infinite;
 }
-@keyframes pulse {
+@keyframes legacy-status-pulse {
   0%,
   100% {
     opacity: 0.4;
@@ -163,55 +163,6 @@
 }
  .legacy-scope .win-btn svg{
   display: block;
-}
-
-/* ---------- 印章 seal logo ---------- */
- .legacy-scope .seal{
-  position: relative;
-  display: grid;
-  place-items: center;
-  background: radial-gradient(
-      120% 120% at 30% 22%,
-      var(--cinnabar-bright),
-      var(--cinnabar) 55%,
-      var(--cinnabar-deep) 100%
-    );
-  color: #fdf1ea;
-  font-family: var(--serif);
-  font-weight: 700;
-  /* the carved frame (边框): a recessed inner line + soft seated shadow */
-  box-shadow: inset 0 0 0 var(--seal-frame, 1.5px) rgba(255, 240, 232, 0.34),
-    inset 0 0 0 calc(var(--seal-frame, 1.5px) + 1px) var(--cinnabar-deep),
-    inset 0 1px 2px rgba(255, 255, 255, 0.28),
-    0 1px 2px rgba(120, 30, 22, 0.45);
-  user-select: none;
-  flex: none;
-  overflow: hidden;
-  isolation: isolate;
-}
- .legacy-scope .seal__char{
-  position: relative;
-  z-index: 2;
-  line-height: 1;
-  transform: translateY(0.02em);
-  text-shadow: 0 1px 1px rgba(120, 30, 22, 0.5);
-}
- .legacy-scope .seal::after{
-  /* faint stamped-ink mottling — multiply so it darkens (ages) the block */
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48'><filter id='s'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2'/></filter><rect width='48' height='48' filter='url(%23s)' opacity='0.3'/></svg>");
-  mix-blend-mode: multiply;
-  opacity: 0.35;
-  pointer-events: none;
-}
- .legacy-scope .seal--soft{
-  box-shadow: inset 0 0 0 var(--seal-frame, 2px) rgba(255, 240, 232, 0.4),
-    inset 0 0 0 calc(var(--seal-frame, 2px) + 1.5px) var(--cinnabar-deep),
-    inset 0 1px 3px rgba(255, 255, 255, 0.3),
-    0 4px 12px rgba(151, 41, 30, 0.28);
 }
 
 /* ---------- sidebar ---------- */
@@ -1337,9 +1288,9 @@
   flex-direction: column;
   min-height: 0;
   box-shadow: inset 1px 0 0 rgba(255, 253, 247, 0.5);
-  animation: drawer-in var(--dur-4) var(--ease-spring);
+  animation: legacy-drawer-in var(--dur-4) var(--ease-spring);
 }
-@keyframes drawer-in {
+@keyframes legacy-drawer-in {
   from {
     opacity: 0;
     transform: translateX(28px);
@@ -1483,10 +1434,10 @@
 }
  .legacy-scope .spinner__svg{
   display: block;
-  animation: spin 1.15s cubic-bezier(0.55, 0.1, 0.45, 0.9) infinite;
+  animation: legacy-spinner-turn 1.15s cubic-bezier(0.55, 0.1, 0.45, 0.9) infinite;
   transform-origin: 50% 50%;
 }
-@keyframes spin {
+@keyframes legacy-spinner-turn {
   to {
     transform: rotate(360deg);
   }
@@ -3760,24 +3711,6 @@
   }
 }
 
-/* ---- seal: a faint settle when it first stamps onto paper ---- */
- .legacy-scope .seal{
-  animation: seal-set var(--dur-4) var(--ease-spring) both;
-}
-@keyframes seal-set {
-  0% {
-    opacity: 0;
-    transform: scale(0.8) rotate(-6deg);
-  }
-  70% {
-    transform: scale(1.04) rotate(1deg);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) rotate(0deg);
-  }
-}
-
 /* ---- icon buttons (refresh etc.): the glyph turns gently on hover, and
    spins a full, satisfying turn on press ---- */
  .legacy-scope .btn--icon svg{
@@ -3877,24 +3810,6 @@
     transform: translateY(8px) scale(0.97);
   }
 }
- .legacy-scope .modal__seal .seal{
-  animation: modal-seal var(--dur-5) var(--ease-spring) both;
-  animation-delay: 0.06s;
-}
-@keyframes modal-seal {
-  0% {
-    opacity: 0;
-    transform: scale(0.5) rotate(-12deg);
-  }
-  65% {
-    transform: scale(1.08) rotate(3deg);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) rotate(0deg);
-  }
-}
-
 /* ---- drawer: already slides in; add a hairline settle to its rows ---- */
  .legacy-scope .drawer__body > .field, .legacy-scope .drawer__body > .field-row, .legacy-scope .drawer__body > .drawer__section-label{
   animation: fade-rise var(--dur-3) var(--ease-out) both;

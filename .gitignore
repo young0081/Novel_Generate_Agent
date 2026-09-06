@@ -44,9 +44,28 @@ installer/dist-out/
 # Agent / CLI 相关（本地开发配置，不上传）
 .claude/
 .codex/
+.agent/
+.agents/
+.harness/
+.playwright-cli/
+/output/playwright/
 openspec/
 CLAUDE.md
 claude.md
+AGENT.md
+AGENTS.md
+CODEX.md
+codex.md
+HARNESS.md
+harness.md
+.CLAUDE
+.AGENT
+.CODEX
+.HARNESS
+
+# 生成的品牌预览和发行包（源码仓库不保存构建产物）
+brand/generated/
+releases/
 
 # 内部开发文档（不开源）
 docs/

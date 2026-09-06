@@ -101,37 +101,6 @@ fn error_code(kind: ErrorKind) -> i64 {
     }
 }
 
-/// The set of built-in tool method names that take their params object directly
-/// as the tool arguments.
-fn is_direct_tool(method: &str) -> bool {
-    matches!(
-        method,
-        "read_file"
-            | "write_file"
-            | "list_dir"
-            | "edit_file"
-            | "search"
-            | "shell"
-            | "web_fetch"
-            | "vcs_commit"
-            | "vcs_log"
-            | "vcs_diff"
-            | "vcs_restore"
-            | "vcs_branch"
-            | "memory_save"
-            | "memory_recall"
-            | "memory_list"
-            | "memory_classify"
-            | "memory_archive"
-            | "checkpoint_create"
-            | "checkpoint_list"
-            | "checkpoint_restore"
-            | "skill_list"
-            | "skill_load"
-            | "spawn_subagent"
-    )
-}
-
 /// Dispatch one parsed request to the engine, returning the JSON result or a
 /// normalized error.
 pub async fn dispatch(engine: &Engine, method: &str, params: Json) -> Result<Json> {
@@ -187,7 +156,7 @@ pub async fn dispatch(engine: &Engine, method: &str, params: Json) -> Result<Jso
             Ok(json!("cancelled"))
         }
 
-        m if is_direct_tool(m) => {
+        m if engine.registry.contains(m) => {
             // The params object is the tool's arguments verbatim.
             let args = if params.is_null() {
                 Json::Object(Default::default())
@@ -280,6 +249,50 @@ mod tests {
             .unwrap();
         assert_eq!(r["ok"], true);
         assert!(r["content"].as_str().unwrap().contains("你好"));
+    }
+
+    #[tokio::test]
+    async fn every_registered_delete_tool_is_directly_reachable() {
+        let e = engine("direct-delete");
+
+        dispatch(
+            &e,
+            "write_file",
+            json!({ "path": "delete-me.md", "content": "temporary" }),
+        )
+        .await
+        .unwrap();
+        let deleted = dispatch(&e, "delete_file", json!({ "path": "delete-me.md" }))
+            .await
+            .unwrap();
+        assert_eq!(deleted["ok"], true);
+
+        let saved = dispatch(
+            &e,
+            "memory_save",
+            json!({
+                "kind": "other",
+                "title": "temporary",
+                "summary": "temporary",
+                "content": "temporary"
+            }),
+        )
+        .await
+        .unwrap();
+        let memory_id = saved["data"]["id"].as_str().unwrap();
+        let deleted = dispatch(&e, "memory_delete", json!({ "id": memory_id }))
+            .await
+            .unwrap();
+        assert_eq!(deleted["ok"], true);
+
+        let checkpoint = dispatch(&e, "checkpoint_create", json!({ "label": "temporary" }))
+            .await
+            .unwrap();
+        let checkpoint_id = checkpoint["data"]["id"].as_str().unwrap();
+        let deleted = dispatch(&e, "checkpoint_delete", json!({ "id": checkpoint_id }))
+            .await
+            .unwrap();
+        assert_eq!(deleted["ok"], true);
     }
 
     #[tokio::test]

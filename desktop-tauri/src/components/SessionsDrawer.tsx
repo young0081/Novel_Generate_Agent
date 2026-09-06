@@ -1,10 +1,11 @@
 // SessionsDrawer — a slide-in right drawer listing all persisted sessions
 // (创作 / 探讨), allowing the user to resume or delete them.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SkeletonGrid } from "./Skeleton";
 import EmptyState from "./EmptyState";
 import ConfirmModal from "./ConfirmModal";
+import BatchActions from "./BatchActions";
 import {
   IconRefresh,
   IconBrush,
@@ -23,6 +24,8 @@ import {
   formatTime,
   type SessionSummary,
 } from "../lib/sessions";
+import { useDialogFocus, useLayerPresence } from "../lib/dialogLayer";
+import { runBatch } from "../lib/batch";
 
 interface SessionsDrawerProps {
   open: boolean;
@@ -38,6 +41,14 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<SessionSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [manageMode, setManageMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [pendingBulk, setPendingBulk] = useState<SessionSummary[] | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const { mounted, closing } = useLayerPresence(open);
+  useDialogFocus(open, drawerRef, onClose, pending !== null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,8 +67,17 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
     if (open) void load();
   }, [open, load]);
 
+  useEffect(() => {
+    const valid = new Set(items.map((item) => item.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
+
   const resume = useCallback(
     (s: SessionSummary) => {
+      if (s.kind !== "discuss" && s.kind !== "writing") return;
       const kind = s.kind === "discuss" ? "discuss" : "studio";
       onResume(kind, s.id);
       onClose(); // close drawer after resuming
@@ -66,6 +86,37 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
   );
 
   const confirmDelete = useCallback(async () => {
+    if (pendingBulk) {
+      setBulkDeleting(true);
+      setBulkProgress({ done: 0, total: pendingBulk.length });
+      let latest: SessionSummary[] | null = null;
+      try {
+        const result = await runBatch(
+          pendingBulk,
+          async (session) => {
+            latest = await deleteSession(session.id);
+          },
+          (done, total) => setBulkProgress({ done, total }),
+        );
+        if (latest) setItems(latest);
+        else {
+          const completedIds = new Set(result.completed.map((session) => session.id));
+          setItems((current) => current.filter((session) => !completedIds.has(session.id)));
+        }
+        const completedIds = new Set(result.completed.map((session) => session.id));
+        setSelectedIds((current) => new Set([...current].filter((id) => !completedIds.has(id))));
+        if (result.failed.length === 0) {
+          toast.ok(`已删除 ${result.completed.length} 个会话`);
+        } else {
+          toast.err(`已删除 ${result.completed.length} 个，${result.failed.length} 个删除失败`);
+        }
+        setPendingBulk(null);
+      } finally {
+        setBulkDeleting(false);
+        setBulkProgress(null);
+      }
+      return;
+    }
     if (!pending) return;
     setDeleting(true);
     try {
@@ -78,14 +129,36 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
     } finally {
       setDeleting(false);
     }
-  }, [pending, toast]);
+  }, [pending, pendingBulk, toast]);
 
-  if (!open) return null;
+  const allSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback(() => {
+    setSelectedIds(allSelected ? new Set() : new Set(items.map((item) => item.id)));
+  }, [allSelected, items]);
+
+  if (!mounted) return null;
 
   return (
     <>
-      <div className="drawer-overlay" onClick={onClose} />
-      <aside className="drawer sessions-drawer">
+      <div className={`drawer-overlay${closing ? " is-closing" : ""}`} onClick={onClose} />
+      <aside
+        ref={drawerRef}
+        className={`drawer sessions-drawer${closing ? " is-closing" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="会话历史"
+        tabIndex={-1}
+      >
         <header className="drawer__head">
           <div>
             <h2 className="drawer__title">会话</h2>
@@ -93,6 +166,18 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
           </div>
           <div className="drawer__head-actions">
             <button
+              className={`btn btn--ghost btn--sm${manageMode ? " is-active" : ""}`}
+              onClick={() => {
+                setManageMode((value) => !value);
+                setSelectedIds(new Set());
+              }}
+              title="批量管理会话"
+              aria-pressed={manageMode}
+            >
+              {manageMode ? "完成" : "批量管理"}
+            </button>
+            <button
+              data-autofocus
               className="btn btn--ghost btn--icon"
               onClick={() => void load()}
               title="刷新"
@@ -111,6 +196,25 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
           </div>
         </header>
 
+        {manageMode && items.length > 0 && (
+          <BatchActions
+            selectedCount={selectedIds.size}
+            totalCount={items.length}
+            allSelected={allSelected}
+            onToggleAll={toggleAll}
+            onClear={() => setSelectedIds(new Set())}
+          >
+            <button
+              type="button"
+              className="btn btn--danger btn--sm"
+              disabled={selectedIds.size === 0 || bulkDeleting}
+              onClick={() => setPendingBulk(items.filter((item) => selectedIds.has(item.id)))}
+            >
+              <IconTrash size={13} /> 删除已选
+            </button>
+          </BatchActions>
+        )}
+
         <div className="drawer__body">
           {loading ? (
             <SkeletonGrid count={6} />
@@ -125,8 +229,18 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
             <div className="sessions-list">
               {items.map((s) => {
                 const isDiscuss = s.kind === "discuss";
+                const canResume = isDiscuss || s.kind === "writing";
                 return (
-                  <article className="session-card" key={s.id}>
+                  <article className={`session-card${manageMode ? " is-manage" : ""}`} key={s.id}>
+                    {manageMode && (
+                      <input
+                        type="checkbox"
+                        className="batch-select"
+                        checked={selectedIds.has(s.id)}
+                        onChange={() => toggleSelected(s.id)}
+                        aria-label={`选择会话：${s.title || "未命名"}`}
+                      />
+                    )}
                     <span
                       className={`chip session-card__kind ${isDiscuss ? "chip--jade" : "chip--accent"}`}
                     >
@@ -142,14 +256,16 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
                       {s.messages} 条 · {formatTime(s.updated_ms)}
                     </div>
                     <div className="session-card__actions">
-                      <button
-                        className="btn btn--primary btn--sm"
-                        onClick={() => resume(s)}
-                        title={isDiscuss ? "继续探讨" : "继续创作"}
-                      >
-                        <IconRestore size={14} />
-                        {isDiscuss ? "继续探讨" : "继续创作"}
-                      </button>
+                      {canResume && (
+                        <button
+                          className="btn btn--primary btn--sm"
+                          onClick={() => resume(s)}
+                          title={isDiscuss ? "继续探讨" : "继续创作"}
+                        >
+                          <IconRestore size={14} />
+                          {isDiscuss ? "继续探讨" : "继续创作"}
+                        </button>
+                      )}
                       <button
                         className="btn btn--ghost btn--icon"
                         onClick={() => setPending(s)}
@@ -168,20 +284,31 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
       </aside>
 
       <ConfirmModal
-        open={pending !== null}
-        title="删除这个会话？"
+        open={pending !== null || pendingBulk !== null}
+        title={pendingBulk ? `删除选中的 ${pendingBulk.length} 个会话？` : "删除这个会话？"}
         sealChar="删"
         danger
-        busy={deleting}
+        busy={deleting || bulkDeleting}
         confirmLabel="删除"
         body={
           <>
-            将永久删除会话「{pending?.title || "（未命名）"}」及其全部对话记录，此操作不可撤销。
+            {pendingBulk ? (
+              <>
+                将永久删除当前选中的 {pendingBulk.length} 个会话及其对话记录。
+                {bulkProgress && <><br />正在处理：{bulkProgress.done} / {bulkProgress.total}</>}
+                <br />此操作不可撤销。
+              </>
+            ) : (
+              <>将永久删除会话「{pending?.title || "（未命名）"}」及其全部对话记录，此操作不可撤销。</>
+            )}
           </>
         }
         onConfirm={() => void confirmDelete()}
         onCancel={() => {
-          if (!deleting) setPending(null);
+          if (!deleting && !bulkDeleting) {
+            setPending(null);
+            setPendingBulk(null);
+          }
         }}
       />
     </>

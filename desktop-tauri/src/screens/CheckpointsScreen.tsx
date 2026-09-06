@@ -5,6 +5,7 @@ import Panel from "../components/Panel";
 import { LoadingBlock, Spinner } from "../components/Spinner";
 import EmptyState from "../components/EmptyState";
 import ConfirmModal from "../components/ConfirmModal";
+import BatchActions from "../components/BatchActions";
 import {
   IconPlus,
   IconRefresh,
@@ -14,11 +15,13 @@ import {
 } from "../components/icons";
 import { invokeTool, describeError } from "../lib/core";
 import { useToast } from "../components/Toast";
+import { runBatch } from "../lib/batch";
+import "../styles/legacy.css";
 
 interface Checkpoint {
   id: string;
   label: string;
-  created_at?: string | number | null;
+  created_ms?: number | null;
   [k: string]: unknown;
 }
 
@@ -37,15 +40,9 @@ function pickList(data: CheckpointListData | null): Checkpoint[] {
   return [];
 }
 
-function formatWhen(v: Checkpoint["created_at"]): string {
+function formatWhen(v: Checkpoint["created_ms"]): string {
   if (v == null) return "";
-  let d: Date;
-  if (typeof v === "number") {
-    d = new Date(v > 1e12 ? v : v * 1000);
-  } else {
-    const n = Number(v);
-    d = Number.isFinite(n) && v.trim() !== "" ? new Date(n > 1e12 ? n : n * 1000) : new Date(v);
-  }
+  const d = new Date(v > 1e12 ? v : v * 1000);
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleString("zh-CN", {
     year: "numeric",
@@ -70,6 +67,11 @@ export default function CheckpointsScreen() {
 
   const [delTarget, setDelTarget] = useState<Checkpoint | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [manageMode, setManageMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [pendingBulk, setPendingBulk] = useState<Checkpoint[] | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -89,6 +91,14 @@ export default function CheckpointsScreen() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const valid = new Set(list.map((checkpoint) => checkpoint.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [list]);
 
   useEffect(() => {
     void refresh();
@@ -133,6 +143,30 @@ export default function CheckpointsScreen() {
   }, [target, refresh, toast]);
 
   const removeCp = useCallback(async () => {
+    if (pendingBulk) {
+      setBulkDeleting(true);
+      setBulkProgress({ done: 0, total: pendingBulk.length });
+      try {
+        const result = await runBatch(
+          pendingBulk,
+          async (checkpoint) => {
+            const res = await invokeTool("checkpoint_delete", { id: checkpoint.id });
+            if (!res.ok) throw new Error(res.content || "删除失败");
+          },
+          (done, total) => setBulkProgress({ done, total }),
+        );
+        const completedIds = new Set(result.completed.map((checkpoint) => checkpoint.id));
+        setList((current) => current.filter((checkpoint) => !completedIds.has(checkpoint.id)));
+        setSelectedIds((current) => new Set([...current].filter((id) => !completedIds.has(id))));
+        if (result.failed.length === 0) toast.ok(`已删除 ${result.completed.length} 个快照`);
+        else toast.err(`已删除 ${result.completed.length} 个，${result.failed.length} 个删除失败`);
+        setPendingBulk(null);
+      } finally {
+        setBulkDeleting(false);
+        setBulkProgress(null);
+      }
+      return;
+    }
     if (!delTarget) return;
     setDeleting(true);
     try {
@@ -149,19 +183,44 @@ export default function CheckpointsScreen() {
     } finally {
       setDeleting(false);
     }
-  }, [delTarget, refresh, toast]);
+  }, [delTarget, pendingBulk, refresh, toast]);
 
   const ordered = useMemo(() => list.slice().reverse(), [list]);
+  const allSelected = ordered.length > 0 && ordered.every((checkpoint) => selectedIds.has(checkpoint.id));
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleAll = useCallback(() => {
+    setSelectedIds(allSelected ? new Set() : new Set(ordered.map((checkpoint) => checkpoint.id)));
+  }, [allSelected, ordered]);
 
   const headerActions = (
-    <button
-      className="btn btn--ghost btn--icon"
-      onClick={() => void refresh()}
-      title="刷新"
-      aria-label="刷新"
-    >
-      <IconRefresh size={16} />
-    </button>
+    <>
+      {ordered.length > 1 && (
+        <button
+          className={`btn btn--ghost btn--sm${manageMode ? " is-active" : ""}`}
+          onClick={() => {
+            setManageMode((value) => !value);
+            setSelectedIds(new Set());
+          }}
+          aria-pressed={manageMode}
+        >
+          {manageMode ? "完成" : "批量管理"}
+        </button>
+      )}
+      <button
+        className="btn btn--ghost btn--icon"
+        onClick={() => void refresh()}
+        title="刷新"
+        aria-label="刷新"
+      >
+        <IconRefresh size={16} />
+      </button>
+    </>
   );
 
   const toolbar = (
@@ -189,7 +248,8 @@ export default function CheckpointsScreen() {
   );
 
   return (
-    <Panel
+    <div className="legacy-scope legacy-screen">
+      <Panel
       title="快照"
       en="Checkpoints"
       subtitle="为创作旅程立碑刻石 · 随时回溯到任一时刻"
@@ -208,8 +268,27 @@ export default function CheckpointsScreen() {
           />
         ) : (
           <div className="timeline">
+            {manageMode && ordered.length > 0 && (
+              <BatchActions
+                selectedCount={selectedIds.size}
+                totalCount={ordered.length}
+                allSelected={allSelected}
+                onToggleAll={toggleAll}
+                onClear={() => setSelectedIds(new Set())}
+                label="批量管理快照"
+              >
+                <button
+                  type="button"
+                  className="btn btn--danger btn--sm"
+                  disabled={selectedIds.size === 0 || bulkDeleting}
+                  onClick={() => setPendingBulk(ordered.filter((checkpoint) => selectedIds.has(checkpoint.id)))}
+                >
+                  <IconTrash size={13} /> 删除已选
+                </button>
+              </BatchActions>
+            )}
             {ordered.map((cp) => {
-              const when = formatWhen(cp.created_at);
+              const when = formatWhen(cp.created_ms);
               return (
                 <div className="cp" key={cp.id}>
                   <div className="cp__rail">
@@ -217,6 +296,15 @@ export default function CheckpointsScreen() {
                   </div>
                   <div className="cp__card">
                     <div>
+                      {manageMode && (
+                        <input
+                          type="checkbox"
+                          className="batch-select"
+                          checked={selectedIds.has(cp.id)}
+                          onChange={() => toggleSelected(cp.id)}
+                          aria-label={`选择快照：${cp.label || cp.id}`}
+                        />
+                      )}
                       <div className="cp__label">
                         {cp.label || "（未命名快照）"}
                       </div>
@@ -273,26 +361,34 @@ export default function CheckpointsScreen() {
       />
 
       <ConfirmModal
-        open={delTarget !== null}
-        title="删除这个快照？"
+        open={delTarget !== null || pendingBulk !== null}
+        title={pendingBulk ? `删除选中的 ${pendingBulk.length} 个快照？` : "删除这个快照？"}
         sealChar="删"
         danger
-        busy={deleting}
+        busy={deleting || bulkDeleting}
         confirmLabel="删除"
         body={
           <>
-            将永久删除快照
-            <br />
-            <code>{delTarget?.label || delTarget?.id}</code>
-            <br />
-            仅删除这一存档记录，当前工作区文件不受影响。
+            {pendingBulk ? (
+              <>
+                将永久删除选中的 {pendingBulk.length} 个快照，当前工作区文件不受影响。
+                {bulkProgress && <><br />正在处理：{bulkProgress.done} / {bulkProgress.total}</>}
+                <br />此操作不可撤销。
+              </>
+            ) : (
+              <>将永久删除快照<br /><code>{delTarget?.label || delTarget?.id}</code><br />仅删除这一存档记录，当前工作区文件不受影响。</>
+            )}
           </>
         }
         onConfirm={() => void removeCp()}
         onCancel={() => {
-          if (!deleting) setDelTarget(null);
+          if (!deleting && !bulkDeleting) {
+            setDelTarget(null);
+            setPendingBulk(null);
+          }
         }}
       />
-    </Panel>
+      </Panel>
+    </div>
   );
 }

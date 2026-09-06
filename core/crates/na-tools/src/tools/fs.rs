@@ -6,6 +6,8 @@
 //! oversized files are handled safely.
 
 use std::fs;
+use std::io::Write;
+use std::path::Path;
 
 use na_common::{json, CoreError, Json, Result};
 use na_sandbox::Capability;
@@ -45,6 +47,7 @@ impl Tool for ReadFileTool {
         Box::pin(async move {
             let path = require_str(&args, "path")?;
             let abs = ctx.jail.resolve(path)?;
+            ensure_user_workspace_path(ctx, &abs)?;
             if !abs.exists() {
                 return Err(CoreError::not_found(format!("file not found: {path}")));
             }
@@ -114,6 +117,7 @@ impl Tool for WriteFileTool {
             let path = require_str(&args, "path")?;
             let content = require_str(&args, "content")?;
             let abs = ctx.jail.resolve(path)?;
+            ensure_user_workspace_path(ctx, &abs)?;
 
             // Enforce the output budget on the bytes we are about to write.
             ctx.budget.check_bytes(content.len())?;
@@ -123,8 +127,7 @@ impl Tool for WriteFileTool {
                     CoreError::from(e).with_context(format!("creating dirs for {path}"))
                 })?;
             }
-            fs::write(&abs, content.as_bytes())
-                .map_err(|e| CoreError::from(e).with_context(format!("writing {path}")))?;
+            atomic_write(&abs, content.as_bytes(), path)?;
 
             let bytes_written = content.len();
             Ok(ToolResult::success(
@@ -166,6 +169,7 @@ impl Tool for ListDirTool {
         Box::pin(async move {
             let path = args.get("path").and_then(Json::as_str).unwrap_or("");
             let abs = ctx.jail.resolve(path)?;
+            ensure_user_workspace_path(ctx, &abs)?;
             if !abs.exists() {
                 return Err(CoreError::not_found(format!("directory not found: {path}")));
             }
@@ -179,6 +183,9 @@ impl Tool for ListDirTool {
             for entry in read {
                 let entry = entry.map_err(CoreError::from)?;
                 let name = entry.file_name().to_string_lossy().into_owned();
+                if abs == ctx.jail.root() && is_reserved_component(&name) {
+                    continue;
+                }
                 let ft = entry.file_type().map_err(CoreError::from)?;
                 let kind = if ft.is_dir() {
                     "dir"
@@ -251,6 +258,7 @@ impl Tool for DeleteFileTool {
         Box::pin(async move {
             let path = require_str(&args, "path")?;
             let abs = ctx.jail.resolve(path)?;
+            ensure_user_workspace_path(ctx, &abs)?;
             if !abs.exists() {
                 return Err(CoreError::not_found(format!("file not found: {path}")));
             }
@@ -277,10 +285,55 @@ fn require_str<'a>(args: &'a Json, key: &str) -> Result<&'a str> {
         .ok_or_else(|| CoreError::invalid_input(format!("missing string argument {key:?}")))
 }
 
+pub(crate) fn ensure_user_workspace_path(ctx: &ToolContext, path: &Path) -> Result<()> {
+    let relative = ctx.jail.relative(path).ok_or_else(|| {
+        CoreError::sandbox(format!(
+            "resolved path is outside workspace: {}",
+            path.display()
+        ))
+    })?;
+    if relative
+        .split('/')
+        .next()
+        .is_some_and(is_reserved_component)
+    {
+        return Err(CoreError::security(format!(
+            "access to internal workspace state is blocked: {relative}"
+        )));
+    }
+    Ok(())
+}
+
+fn is_reserved_component(component: &str) -> bool {
+    component.eq_ignore_ascii_case(".na")
+        || component.eq_ignore_ascii_case(".na-vcs")
+        || component.eq_ignore_ascii_case(".git")
+}
+
+pub(crate) fn atomic_write(path: &Path, content: &[u8], display_path: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| CoreError::invalid_input("file path has no parent directory"))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+        CoreError::from(error).with_context(format!("creating temporary file for {display_path}"))
+    })?;
+    temp.write_all(content).map_err(|error| {
+        CoreError::from(error).with_context(format!("writing temporary file for {display_path}"))
+    })?;
+    temp.as_file().sync_all().map_err(|error| {
+        CoreError::from(error).with_context(format!("flushing temporary file for {display_path}"))
+    })?;
+    temp.persist(path).map_err(|error| {
+        CoreError::from(error.error).with_context(format!("replacing {display_path}"))
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tool::ToolContextBuilder;
+    use crate::tools::edit::EditFileTool;
 
     fn ctx(tag: &str) -> ToolContext {
         let mut p = std::env::temp_dir();
@@ -366,9 +419,10 @@ mod tests {
             .iter()
             .map(|e| e["name"].as_str().unwrap())
             .collect();
-        // dir "sub" sorts before file "a.txt"; ".na" state dir also present.
+        // Internal state is hidden from model-facing directory listings.
         assert!(names.contains(&"sub"));
         assert!(names.contains(&"a.txt"));
+        assert!(!names.contains(&".na"));
     }
 
     #[tokio::test]
@@ -401,5 +455,103 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is(na_common::ErrorKind::BudgetExceeded));
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_content_without_temp_leaks() {
+        let c = ctx("atomic");
+        let path = c.jail.resolve("chapter.md").unwrap();
+        fs::write(&path, "old").unwrap();
+
+        atomic_write(&path, b"new chapter", "chapter.md").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new chapter");
+        let siblings: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            siblings.iter().filter(|name| *name != "chapter.md").count(),
+            1
+        );
+        assert!(siblings.iter().any(|name| name == "chapter.md"));
+    }
+
+    #[tokio::test]
+    async fn file_tools_hide_and_reject_internal_workspace_state() {
+        let context = ctx("reserved");
+        let root = context.jail.root();
+        fs::write(root.join(".na/protected.txt"), "state secret").unwrap();
+        fs::create_dir_all(root.join(".na-vcs")).unwrap();
+        fs::write(root.join(".na-vcs/commits.jsonl"), "commit secret").unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "git secret").unwrap();
+
+        let listing = ListDirTool
+            .execute(json!({ "path": "" }), &context)
+            .await
+            .unwrap();
+        let names: Vec<&str> = listing.data["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["name"].as_str())
+            .collect();
+        assert!(!names
+            .iter()
+            .any(|name| matches!(*name, ".na" | ".na-vcs" | ".git")));
+
+        let absolute = root
+            .join(".na/protected.txt")
+            .to_string_lossy()
+            .into_owned();
+        for path in [
+            ".na/protected.txt".to_string(),
+            "./.na/protected.txt".to_string(),
+            "chapters/../.na/protected.txt".to_string(),
+            ".NA/protected.txt".to_string(),
+            absolute,
+        ] {
+            let error = ReadFileTool
+                .execute(json!({ "path": path }), &context)
+                .await
+                .unwrap_err();
+            assert!(error.is(na_common::ErrorKind::SecurityBlocked), "{error}");
+        }
+
+        for path in [
+            ".na/new.json",
+            ".na-vcs/state.json",
+            ".git/hooks/pre-commit",
+        ] {
+            let error = WriteFileTool
+                .execute(json!({ "path": path, "content": "blocked" }), &context)
+                .await
+                .unwrap_err();
+            assert!(error.is(na_common::ErrorKind::SecurityBlocked), "{error}");
+        }
+
+        let edit_error = EditFileTool
+            .execute(
+                json!({ "path": ".na/protected.txt", "mode": "full", "content": "changed" }),
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(edit_error.is(na_common::ErrorKind::SecurityBlocked));
+        let delete_error = DeleteFileTool
+            .execute(json!({ "path": ".na/protected.txt" }), &context)
+            .await
+            .unwrap_err();
+        assert!(delete_error.is(na_common::ErrorKind::SecurityBlocked));
+        let list_error = ListDirTool
+            .execute(json!({ "path": ".na" }), &context)
+            .await
+            .unwrap_err();
+        assert!(list_error.is(na_common::ErrorKind::SecurityBlocked));
+        assert_eq!(
+            fs::read_to_string(root.join(".na/protected.txt")).unwrap(),
+            "state secret"
+        );
     }
 }

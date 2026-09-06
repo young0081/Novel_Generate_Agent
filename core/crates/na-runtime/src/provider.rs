@@ -14,8 +14,12 @@
 //! [`ToolSpec`] shapes are mapped to each API's request format, and native
 //! tool-calling responses are parsed back into [`CompletionResponse`].
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -23,11 +27,14 @@ use serde::{Deserialize, Serialize};
 use na_common::{json, CoreError, Json, Result, ToolCallId};
 use na_tools::ToolSpec;
 
+use crate::context::estimate_tokens;
 use crate::message::{Message, Role, ToolCallRequest};
 use crate::model::{
     BoxFuture, CompletionRequest, CompletionResponse, FinishReason, ModelProvider, Protocol,
-    SamplingParams,
+    SamplingParams, UsageMetadata,
 };
+use crate::react::{parse_react, ReActStep};
+use crate::session::atomic_write;
 
 /// The wire protocol a provider speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,7 +148,7 @@ fn provider_status_message(
     let mut msg = format!("供应商 {provider} 返回 {status}: {}", truncate(body, 400));
     if uses_native_tools(req) {
         msg.push_str(
-            "。该模型可能不支持原生工具调用，请在“供应商”中把工具调用模式改为“自动兼容”或“文本工具”。",
+            "。该模型可能不支持原生工具调用；自动兼容模式会尝试回退到文本工具，也可以在“供应商”中明确选择“文本工具”。",
         );
     }
     msg
@@ -157,10 +164,90 @@ fn should_retry_without_stream(status: StatusCode, body: &str) -> bool {
 
 fn gemini_model_path(model: &str) -> String {
     model
+        .strip_prefix("models/")
+        .unwrap_or(model)
         .split('/')
         .map(|part| part.replace(':', "%3A"))
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn gemini_model_resource(model: &str) -> String {
+    format!("models/{}", gemini_model_path(model))
+}
+
+/// Build a Gemini REST endpoint while accepting both the documented host-only
+/// base URL and a custom base URL that already ends in `/v1beta`.
+fn gemini_endpoint(base_url: &str, path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let base = base.strip_suffix("/v1beta").unwrap_or(base);
+    format!("{base}/v1beta/{path}")
+}
+
+const GEMINI_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const GEMINI_CACHE_RETRY: Duration = Duration::from_secs(60);
+
+/// Gemini's minimum cache size varies by model family. The conservative values
+/// below avoid repeatedly asking the API to create a cache that it will reject.
+fn gemini_cache_min_tokens(model: &str) -> usize {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("2.5-pro") {
+        4_096
+    } else if lower.contains("1.5-pro") {
+        2_048
+    } else {
+        1_024
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct GeminiCacheKey {
+    base_url: String,
+    model: String,
+    api_key_hash: u64,
+    system_hash: u64,
+    prefix_hash: u64,
+    prefix_len: usize,
+}
+
+#[derive(Debug)]
+enum GeminiCacheRecord {
+    Active {
+        resource_name: String,
+        expires_at: Instant,
+    },
+    /// Cache creation is best-effort. Remember a failed endpoint briefly so a
+    /// long agent run does not issue one failing cache request per model turn.
+    Unavailable { retry_at: Instant },
+}
+
+#[derive(Debug, Clone)]
+struct GeminiCacheHandle {
+    key: GeminiCacheKey,
+    resource_name: String,
+    prefix_len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GeminiCachePlan {
+    key: GeminiCacheKey,
+    model_resource: String,
+    system: String,
+    prefix_contents: Vec<Json>,
+    prefix_len: usize,
+}
+
+static GEMINI_CACHE_REGISTRY: OnceLock<Mutex<HashMap<GeminiCacheKey, GeminiCacheRecord>>> =
+    OnceLock::new();
+
+fn gemini_cache_registry() -> &'static Mutex<HashMap<GeminiCacheKey, GeminiCacheRecord>> {
+    GEMINI_CACHE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn hash_text(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn react_tool_call_text(thought: &str, call: &ToolCallRequest) -> String {
@@ -184,7 +271,44 @@ fn react_observation_text(content: &str) -> String {
 /// Map our messages to OpenAI chat messages.
 fn openai_messages(msgs: &[Message], protocol: Protocol) -> Vec<Json> {
     let mut out = Vec::with_capacity(msgs.len());
-    for m in msgs {
+    let mut index = 0usize;
+    while index < msgs.len() {
+        let m = &msgs[index];
+        if protocol == Protocol::NativeToolCall
+            && m.role == Role::Assistant
+            && m.tool_call.is_some()
+        {
+            // OpenAI requires one assistant message containing all calls from a
+            // turn, followed by one tool message per result. The internal
+            // transcript stores calls as separate messages for simple UI
+            // rendering, so merge adjacent calls at the wire boundary.
+            let mut text = String::new();
+            let mut calls = Vec::new();
+            while index < msgs.len()
+                && msgs[index].role == Role::Assistant
+                && msgs[index].tool_call.is_some()
+            {
+                let current = &msgs[index];
+                if text.is_empty() && !current.content.is_empty() {
+                    text.push_str(&current.content);
+                }
+                let Some(call) = current.tool_call.as_ref() else {
+                    break;
+                };
+                calls.push(json!({
+                    "id": call.id.as_str(),
+                    "type": "function",
+                    "function": { "name": call.name, "arguments": call.args.to_string() }
+                }));
+                index += 1;
+            }
+            out.push(json!({
+                "role": "assistant",
+                "content": if text.is_empty() { Json::Null } else { json!(text) },
+                "tool_calls": calls,
+            }));
+            continue;
+        }
         match m.role {
             Role::System => out.push(json!({ "role": "system", "content": m.content })),
             Role::User => out.push(json!({ "role": "user", "content": m.content })),
@@ -226,6 +350,7 @@ fn openai_messages(msgs: &[Message], protocol: Protocol) -> Vec<Json> {
                 }
             }
         }
+        index += 1;
     }
     out
 }
@@ -298,7 +423,11 @@ pub fn parse_openai_response(v: &Json) -> Result<CompletionResponse> {
         .to_string();
 
     let mut tool_calls = Vec::new();
-    if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+    if let Some(tcs) = msg
+        .get("tool_calls")
+        .and_then(Json::as_array)
+        .filter(|calls| !calls.is_empty())
+    {
         for tc in tcs {
             let id = tc
                 .get("id")
@@ -311,12 +440,15 @@ pub fn parse_openai_response(v: &Json) -> Result<CompletionResponse> {
                 .and_then(|n| n.as_str())
                 .unwrap_or("")
                 .to_string();
-            let args_raw = func
-                .and_then(|f| f.get("arguments"))
-                .and_then(|a| a.as_str())
-                .unwrap_or("{}");
-            let args = serde_json::from_str::<Json>(args_raw)
-                .unwrap_or_else(|_| json!({ "_raw": args_raw }));
+            let args = match func.and_then(|f| f.get("arguments")) {
+                Some(Json::String(raw)) => {
+                    serde_json::from_str::<Json>(raw).unwrap_or_else(|_| json!({ "_raw": raw }))
+                }
+                // A number of OpenAI-compatible gateways return the already
+                // decoded object instead of the documented JSON string.
+                Some(value) if value.is_object() => value.clone(),
+                _ => json!({}),
+            };
             if !name.is_empty() {
                 let cid = if id.is_empty() {
                     ToolCallId::new()
@@ -325,6 +457,21 @@ pub fn parse_openai_response(v: &Json) -> Result<CompletionResponse> {
                 };
                 tool_calls.push(ToolCallRequest::with_id(cid, name, args));
             }
+        }
+    } else if let Some(function) = msg.get("function_call") {
+        // Older OpenAI-compatible gateways still emit the pre-0613
+        // `function_call` shape. Treat it as one native tool call so the
+        // agent remains compatible with both generations of the API.
+        let name = function.get("name").and_then(Json::as_str).unwrap_or("");
+        if !name.is_empty() {
+            let args = match function.get("arguments") {
+                Some(Json::String(raw)) => {
+                    serde_json::from_str::<Json>(raw).unwrap_or_else(|_| json!({ "_raw": raw }))
+                }
+                Some(value) if value.is_object() => value.clone(),
+                _ => json!({}),
+            };
+            tool_calls.push(ToolCallRequest::new(name, args));
         }
     }
 
@@ -339,6 +486,7 @@ pub fn parse_openai_response(v: &Json) -> Result<CompletionResponse> {
         text,
         tool_calls,
         finish,
+        usage: None,
     })
 }
 
@@ -420,7 +568,12 @@ fn anthropic_messages(msgs: &[Message], protocol: Protocol) -> (String, Vec<Json
                     anthropic_push(
                         &mut seq,
                         "user",
-                        json!({ "type": "tool_result", "tool_use_id": id, "content": m.content }),
+                        json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": m.content,
+                            "is_error": m.tool_result.as_ref().map(|result| !result.ok).unwrap_or(false),
+                        }),
                     );
                 }
             }
@@ -530,6 +683,7 @@ pub fn parse_anthropic_response(v: &Json) -> Result<CompletionResponse> {
         text,
         tool_calls,
         finish,
+        usage: None,
     })
 }
 
@@ -537,8 +691,165 @@ fn gemini_function_declaration(spec: &ToolSpec) -> Json {
     json!({
         "name": spec.name,
         "description": spec.description,
-        "parameters": spec.input_schema,
+        "parameters": gemini_schema(&spec.input_schema),
     })
+}
+
+/// Gemini accepts an OpenAPI schema subset for function declarations. The
+/// internal tool schemas intentionally use full JSON Schema (for local
+/// validation), so sending them verbatim makes some Gemini models reject the
+/// entire request with an opaque "tool is incompatible" error. Keep the
+/// provider mapping conservative and strip keywords Gemini does not implement.
+fn gemini_schema(schema: &Json) -> Json {
+    let Some(object) = schema.as_object() else {
+        return json!({ "type": "OBJECT" });
+    };
+
+    let mut out = serde_json::Map::new();
+    for key in [
+        "format",
+        "description",
+        "enum",
+        "minItems",
+        "maxItems",
+        "minProperties",
+        "maxProperties",
+    ] {
+        if let Some(value) = object.get(key) {
+            out.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(nullable) = object.get("nullable").and_then(Json::as_bool) {
+        out.insert("nullable".to_string(), json!(nullable));
+    }
+
+    // JSON Schema permits a union in `type`; Gemini expects one scalar type
+    // plus an optional nullable flag. Prefer the first non-null member.
+    match object.get("type") {
+        Some(Json::String(value)) => {
+            if let Some(mapped) = gemini_schema_type(value) {
+                out.insert("type".to_string(), json!(mapped));
+            }
+        }
+        Some(Json::Array(types)) => {
+            if types.iter().any(|value| {
+                value
+                    .as_str()
+                    .map(|value| value.eq_ignore_ascii_case("null"))
+                    == Some(true)
+            }) {
+                out.insert("nullable".to_string(), json!(true));
+            }
+            if let Some(value) = types
+                .iter()
+                .filter_map(Json::as_str)
+                .find_map(gemini_schema_type)
+            {
+                out.insert("type".to_string(), json!(value));
+            }
+        }
+        _ => {}
+    }
+
+    // JSON Schema allows an enum-only property to omit `type`. Infer the
+    // scalar type so Gemini does not receive an OBJECT parameter with string
+    // enum values (a common source of "tool incompatible" errors).
+    if !out.contains_key("type") {
+        if let Some(inferred) = object.get("enum").and_then(gemini_enum_type) {
+            out.insert("type".to_string(), json!(inferred));
+        }
+    }
+
+    // Collapse simple unions used by generated JSON Schema documents. Gemini
+    // has no `oneOf`/`anyOf` in function declarations; local validation still
+    // uses the original schema before a call is executed.
+    if !out.contains_key("type") {
+        for key in ["oneOf", "anyOf"] {
+            if let Some(Json::Array(variants)) = object.get(key) {
+                for variant in variants {
+                    let mapped = gemini_schema(variant);
+                    if mapped.get("nullable").and_then(Json::as_bool) == Some(true) {
+                        out.insert("nullable".to_string(), json!(true));
+                    }
+                    if let Some(mapped_type) = mapped.get("type") {
+                        // A `null` branch maps to a placeholder object. Prefer
+                        // the first actual value type in a nullable union.
+                        let is_null_variant = variant
+                            .get("type")
+                            .and_then(Json::as_str)
+                            .map(|value| value.eq_ignore_ascii_case("null"))
+                            .unwrap_or(false);
+                        if !is_null_variant || mapped_type.as_str() != Some("OBJECT") {
+                            out.insert("type".to_string(), mapped_type.clone());
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    if let Some(properties) = object.get("properties").and_then(Json::as_object) {
+        let mapped = properties
+            .iter()
+            .map(|(name, value)| (name.clone(), gemini_schema(value)))
+            .collect();
+        out.insert("properties".to_string(), Json::Object(mapped));
+    }
+    if let Some(required) = object.get("required").and_then(Json::as_array) {
+        let names: Vec<Json> = required
+            .iter()
+            .filter(|value| value.as_str().is_some())
+            .cloned()
+            .collect();
+        if !names.is_empty() {
+            out.insert("required".to_string(), Json::Array(names));
+        }
+    }
+    if let Some(items) = object.get("items") {
+        out.insert("items".to_string(), gemini_schema(items));
+    }
+
+    // A malformed/non-object tool schema should still produce a valid Gemini
+    // declaration. Local validation remains responsible for the real schema.
+    if !out.contains_key("type") {
+        out.insert("type".to_string(), json!("OBJECT"));
+    }
+    Json::Object(out)
+}
+
+/// Gemini's REST schema enum is uppercase, while the local JSON Schema uses
+/// lowercase names. Unknown and `null` types are omitted so they cannot make a
+/// function declaration invalid; nullable unions are handled by the caller.
+fn gemini_schema_type(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "string" => Some("STRING"),
+        "number" => Some("NUMBER"),
+        "integer" => Some("INTEGER"),
+        "boolean" => Some("BOOLEAN"),
+        "array" => Some("ARRAY"),
+        "object" => Some("OBJECT"),
+        _ => None,
+    }
+}
+
+fn gemini_enum_type(value: &Json) -> Option<&'static str> {
+    let values = value.as_array()?;
+    if values.is_empty() {
+        return None;
+    }
+    if values.iter().all(Json::is_string) {
+        Some("STRING")
+    } else if values.iter().all(Json::is_boolean) {
+        Some("BOOLEAN")
+    } else if values.iter().all(|value| value.is_i64() || value.is_u64()) {
+        Some("INTEGER")
+    } else if values.iter().all(Json::is_number) {
+        Some("NUMBER")
+    } else {
+        None
+    }
 }
 
 fn gemini_text_part(text: &str) -> Json {
@@ -571,17 +882,88 @@ fn gemini_function_response_part(msg: &Message) -> Json {
     })
 }
 
+/// Gemini expects one content turn per role transition. In particular, all
+/// responses to a parallel function-call batch must be parts of the same
+/// `user` turn, not a series of adjacent user messages.
+fn gemini_push_parts(contents: &mut Vec<Json>, role: &'static str, parts: Vec<Json>) {
+    if parts.is_empty() {
+        return;
+    }
+    if let Some(last) = contents.last_mut() {
+        if last.get("role").and_then(Json::as_str) == Some(role) {
+            if let Some(existing) = last.get_mut("parts").and_then(Json::as_array_mut) {
+                existing.extend(parts);
+                return;
+            }
+        }
+    }
+    contents.push(json!({ "role": role, "parts": parts }));
+}
+
+/// Parse Gemini's optional token accounting block. The API uses camelCase
+/// keys, while the internal model keeps Rust-style names for callers.
+fn parse_gemini_usage(v: &Json) -> Option<UsageMetadata> {
+    let usage = v.get("usageMetadata")?;
+    let value = |key: &str| {
+        usage
+            .get(key)
+            .and_then(Json::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    let parsed = UsageMetadata {
+        prompt_token_count: value("promptTokenCount"),
+        response_token_count: value("responseTokenCount").or_else(|| value("candidatesTokenCount")),
+        total_token_count: value("totalTokenCount"),
+        cached_content_token_count: value("cachedContentTokenCount"),
+    };
+    if parsed.prompt_token_count.is_none()
+        && parsed.response_token_count.is_none()
+        && parsed.total_token_count.is_none()
+        && parsed.cached_content_token_count.is_none()
+    {
+        None
+    } else {
+        Some(parsed)
+    }
+}
+
 fn gemini_contents(msgs: &[Message], protocol: Protocol) -> (Option<String>, Vec<Json>) {
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<Json> = Vec::new();
 
-    for m in msgs {
+    let mut index = 0usize;
+    while index < msgs.len() {
+        let m = &msgs[index];
+        if protocol == Protocol::NativeToolCall
+            && m.role == Role::Assistant
+            && m.tool_call.is_some()
+        {
+            // Gemini models expect all function calls emitted in one model
+            // turn to share one `content.parts` array. Merge the internal
+            // per-call transcript messages before sending them.
+            let mut parts = Vec::new();
+            while index < msgs.len()
+                && msgs[index].role == Role::Assistant
+                && msgs[index].tool_call.is_some()
+            {
+                let current = &msgs[index];
+                if parts.is_empty() && !current.content.trim().is_empty() {
+                    parts.push(gemini_text_part(&current.content));
+                }
+                let Some(call) = current.tool_call.as_ref() else {
+                    break;
+                };
+                parts.push(gemini_function_call_part(call));
+                index += 1;
+            }
+            gemini_push_parts(&mut contents, "model", parts);
+            continue;
+        }
         match m.role {
             Role::System => system_parts.push(m.content.clone()),
-            Role::User => contents.push(json!({
-                "role": "user",
-                "parts": [gemini_text_part(&m.content)]
-            })),
+            Role::User => {
+                gemini_push_parts(&mut contents, "user", vec![gemini_text_part(&m.content)])
+            }
             Role::Assistant => {
                 let mut parts = Vec::new();
                 if let Some(call) = &m.tool_call {
@@ -596,9 +978,7 @@ fn gemini_contents(msgs: &[Message], protocol: Protocol) -> (Option<String>, Vec
                 } else if !m.content.is_empty() {
                     parts.push(gemini_text_part(&m.content));
                 }
-                if !parts.is_empty() {
-                    contents.push(json!({ "role": "model", "parts": parts }));
-                }
+                gemini_push_parts(&mut contents, "model", parts);
             }
             Role::Tool => {
                 let part = if protocol == Protocol::ReActText {
@@ -606,9 +986,10 @@ fn gemini_contents(msgs: &[Message], protocol: Protocol) -> (Option<String>, Vec
                 } else {
                     gemini_function_response_part(m)
                 };
-                contents.push(json!({ "role": "user", "parts": [part] }));
+                gemini_push_parts(&mut contents, "user", vec![part]);
             }
         }
+        index += 1;
     }
 
     let system = if system_parts.is_empty() {
@@ -651,6 +1032,48 @@ pub fn build_gemini_body(max_tokens: u32, req: &CompletionRequest) -> Json {
         });
     }
     body
+}
+
+fn build_gemini_cache_body(plan: &GeminiCachePlan) -> Json {
+    let mut body = json!({
+        "model": plan.model_resource,
+        "displayName": "novel-generate-agent",
+        "systemInstruction": {
+            "parts": [{ "text": plan.system }]
+        },
+        "ttl": format!("{}s", GEMINI_CACHE_TTL.as_secs()),
+    });
+    if !plan.prefix_contents.is_empty() {
+        body["contents"] = json!(plan.prefix_contents);
+    }
+    body
+}
+
+/// Attach a cached context to a normal generation body. The cached prefix is
+/// removed from `contents`; sending it again would count the same tokens twice
+/// and defeats the point of explicit context caching.
+fn apply_gemini_cache(body: &mut Json, handle: &GeminiCacheHandle) {
+    body["cachedContent"] = json!(handle.resource_name);
+    if handle.prefix_len > 0 {
+        if let Some(contents) = body.get("contents").and_then(Json::as_array) {
+            body["contents"] = json!(contents
+                .iter()
+                .skip(handle.prefix_len)
+                .cloned()
+                .collect::<Vec<_>>());
+        }
+    }
+    if let Some(object) = body.as_object_mut() {
+        object.remove("systemInstruction");
+    }
+}
+
+fn is_gemini_cache_error(status: StatusCode, body: &str) -> bool {
+    if !matches!(status.as_u16(), 400 | 404 | 409 | 410 | 422) {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    lower.contains("cachedcontent") || lower.contains("cached content") || lower.contains("cache")
 }
 
 /// Parse a Gemini native `generateContent` response.
@@ -706,6 +1129,7 @@ pub fn parse_gemini_response(v: &Json) -> Result<CompletionResponse> {
         text,
         tool_calls,
         finish,
+        usage: parse_gemini_usage(v),
     })
 }
 
@@ -738,6 +1162,23 @@ fn drain_lines(buf: &mut Vec<u8>) -> Vec<String> {
 /// Extract the payload of an SSE `data:` line (trimmed), if this is one.
 fn sse_data(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix("data:").map(|d| d.trim())
+}
+
+fn parse_sse_json(data: &str) -> Result<Json> {
+    serde_json::from_str(data)
+        .map_err(|error| CoreError::model(format!("流式响应包含无效 JSON: {error}")))
+}
+
+fn take_trailing_line(buf: &mut Vec<u8>) -> Option<String> {
+    if buf.is_empty() {
+        return None;
+    }
+    let bytes = std::mem::take(buf);
+    Some(
+        String::from_utf8_lossy(&bytes)
+            .trim_end_matches(['\n', '\r'])
+            .to_string(),
+    )
 }
 
 /// Fold one OpenAI streaming chunk into the running accumulators.
@@ -782,6 +1223,18 @@ fn openai_stream_event(
                         slot.args.push_str(args);
                     }
                 }
+            }
+        }
+        if let Some(function) = delta.get("function_call") {
+            if tools.is_empty() {
+                tools.push(ToolAccum::default());
+            }
+            let slot = &mut tools[0];
+            if let Some(name) = function.get("name").and_then(Json::as_str) {
+                slot.name.push_str(name);
+            }
+            if let Some(args) = function.get("arguments").and_then(Json::as_str) {
+                slot.args.push_str(args);
             }
         }
     }
@@ -862,6 +1315,7 @@ fn anthropic_stream_event(
 /// Fold one Gemini `streamGenerateContent` SSE chunk into the running
 /// accumulators. Each chunk has the same top-level shape as a partial
 /// `GenerateContentResponse`.
+#[allow(dead_code)]
 fn gemini_stream_event(
     d: &Json,
     text: &mut String,
@@ -869,12 +1323,29 @@ fn gemini_stream_event(
     finish: &mut Option<FinishReason>,
     on_delta: &dyn Fn(&str),
 ) -> Result<()> {
+    gemini_stream_event_with_usage(d, text, tools, finish, on_delta, &mut None)
+}
+
+/// Variant of [`gemini_stream_event`] that retains usage metadata from the
+/// final SSE chunk for the completed response.
+fn gemini_stream_event_with_usage(
+    d: &Json,
+    text: &mut String,
+    tools: &mut Vec<ToolAccum>,
+    finish: &mut Option<FinishReason>,
+    on_delta: &dyn Fn(&str),
+    usage: &mut Option<UsageMetadata>,
+) -> Result<()> {
     if let Some(err) = d.get("error") {
         let msg = err
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("unknown provider error");
         return Err(CoreError::model(format!("provider error: {msg}")));
+    }
+
+    if let Some(parsed) = parse_gemini_usage(d) {
+        *usage = Some(parsed);
     }
 
     let Some(candidate) = d
@@ -930,7 +1401,16 @@ fn finish_accum(
     text: String,
     tools: Vec<ToolAccum>,
     finish: Option<FinishReason>,
-) -> CompletionResponse {
+) -> Result<CompletionResponse> {
+    finish_accum_with_usage(text, tools, finish, None)
+}
+
+fn finish_accum_with_usage(
+    text: String,
+    tools: Vec<ToolAccum>,
+    finish: Option<FinishReason>,
+    usage: Option<UsageMetadata>,
+) -> Result<CompletionResponse> {
     let mut tool_calls = Vec::new();
     for t in tools {
         if t.name.is_empty() {
@@ -939,7 +1419,12 @@ fn finish_accum(
         let args = if t.args.trim().is_empty() {
             json!({})
         } else {
-            serde_json::from_str::<Json>(&t.args).unwrap_or_else(|_| json!({ "_raw": t.args }))
+            serde_json::from_str::<Json>(&t.args).map_err(|error| {
+                CoreError::model(format!(
+                    "供应商返回了无效的工具参数 JSON（工具 {:?}）: {error}",
+                    t.name
+                ))
+            })?
         };
         let cid = if t.id.is_empty() {
             ToolCallId::new()
@@ -959,11 +1444,12 @@ fn finish_accum(
     } else {
         finish
     };
-    CompletionResponse {
+    Ok(CompletionResponse {
         text,
         tool_calls,
         finish,
-    }
+        usage,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -993,7 +1479,7 @@ impl HttpModelProvider {
     pub fn new(config: ProviderConfig, model: impl Into<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(180))
-            .user_agent("novel-generate-team/0.1")
+            .user_agent(concat!("novel-generate-agent/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| CoreError::model(format!("无法创建 HTTP 客户端: {e}")))?;
         let max_tokens = config.max_tokens.unwrap_or(4096);
@@ -1003,6 +1489,166 @@ impl HttpModelProvider {
             model: model.into(),
             max_tokens,
         })
+    }
+
+    fn gemini_cache_plan(&self, req: &CompletionRequest) -> Option<GeminiCachePlan> {
+        // A cached prefix must never end inside a function-call round trip.
+        // Gemini validates the cached transcript as a whole, and replaying a
+        // model `functionCall` without its matching `functionResponse` causes
+        // intermittent INVALID_ARGUMENT/tool compatibility failures. Once a
+        // run has entered tool mode, use the ordinary request body instead.
+        if req
+            .messages
+            .iter()
+            .any(|message| message.tool_call.is_some() || message.tool_result.is_some())
+        {
+            return None;
+        }
+        let (system, contents) = gemini_contents(&req.messages, req.protocol);
+        let system = system?.trim().to_string();
+        if system.is_empty() {
+            return None;
+        }
+
+        // System instructions and the oldest transcript turns are stable across
+        // an agent loop. Select the shortest prefix that reaches the provider's
+        // cache floor; newer turns remain dynamic and are sent in the request.
+        let mut prefix_contents = Vec::new();
+        let mut prefix_len = 0usize;
+        let mut estimated = estimate_tokens(&system);
+        let min_tokens = gemini_cache_min_tokens(&self.model);
+        for (index, content) in contents.iter().enumerate() {
+            if estimated >= min_tokens {
+                break;
+            }
+            estimated = estimated.saturating_add(estimate_tokens(
+                &serde_json::to_string(content).unwrap_or_default(),
+            ));
+            prefix_contents.push(content.clone());
+            prefix_len = index + 1;
+        }
+        if estimated < min_tokens {
+            return None;
+        }
+
+        // The cachedContents endpoint expects at least one content turn. Keep
+        // the first real turn in the cache even when the system instruction by
+        // itself already reaches the token floor; it is removed from the
+        // generation suffix when a later turn is available.
+        if prefix_contents.is_empty() {
+            let first = contents.first()?.clone();
+            prefix_contents.push(first);
+            prefix_len = 1;
+        }
+
+        let prefix_json = serde_json::to_string(&prefix_contents).ok()?;
+        let key = GeminiCacheKey {
+            base_url: self.config.base_url.trim_end_matches('/').to_string(),
+            model: gemini_model_resource(&self.model),
+            api_key_hash: hash_text(&self.config.api_key),
+            system_hash: hash_text(&system),
+            prefix_hash: hash_text(&prefix_json),
+            prefix_len,
+        };
+        Some(GeminiCachePlan {
+            key,
+            model_resource: gemini_model_resource(&self.model),
+            system,
+            prefix_contents,
+            prefix_len,
+        })
+    }
+
+    async fn ensure_gemini_cache(&self, plan: &GeminiCachePlan) -> Option<GeminiCacheHandle> {
+        let now = Instant::now();
+        if let Ok(mut registry) = gemini_cache_registry().lock() {
+            match registry.get(&plan.key) {
+                Some(GeminiCacheRecord::Active {
+                    resource_name,
+                    expires_at,
+                }) if *expires_at > now => {
+                    return Some(GeminiCacheHandle {
+                        key: plan.key.clone(),
+                        resource_name: resource_name.clone(),
+                        prefix_len: plan.prefix_len,
+                    });
+                }
+                Some(GeminiCacheRecord::Unavailable { retry_at }) if *retry_at > now => {
+                    return None;
+                }
+                _ => {
+                    registry.remove(&plan.key);
+                }
+            }
+        }
+
+        let response = match self
+            .client
+            .post(gemini_endpoint(&self.config.base_url, "cachedContents"))
+            .header("x-goog-api-key", &self.config.api_key)
+            .json(&build_gemini_cache_body(plan))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                self.mark_gemini_cache_unavailable(&plan.key);
+                return None;
+            }
+        };
+        let status = response.status();
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(_) => {
+                self.mark_gemini_cache_unavailable(&plan.key);
+                return None;
+            }
+        };
+        if !status.is_success() {
+            self.mark_gemini_cache_unavailable(&plan.key);
+            return None;
+        }
+        let resource_name = match serde_json::from_str::<Json>(&body)
+            .ok()
+            .and_then(|value| value.get("name").and_then(Json::as_str).map(str::to_string))
+        {
+            Some(name) => name,
+            None => {
+                self.mark_gemini_cache_unavailable(&plan.key);
+                return None;
+            }
+        };
+        if let Ok(mut registry) = gemini_cache_registry().lock() {
+            registry.insert(
+                plan.key.clone(),
+                GeminiCacheRecord::Active {
+                    resource_name: resource_name.clone(),
+                    expires_at: Instant::now() + GEMINI_CACHE_TTL,
+                },
+            );
+        }
+        Some(GeminiCacheHandle {
+            key: plan.key.clone(),
+            resource_name,
+            prefix_len: plan.prefix_len,
+        })
+    }
+
+    fn invalidate_gemini_cache(&self, handle: &GeminiCacheHandle) {
+        if let Ok(mut registry) = gemini_cache_registry().lock() {
+            registry.remove(&handle.key);
+        }
+    }
+
+    fn mark_gemini_cache_unavailable(&self, key: &GeminiCacheKey) {
+        if let Ok(mut registry) = gemini_cache_registry().lock() {
+            registry.insert(
+                key.clone(),
+                GeminiCacheRecord::Unavailable {
+                    retry_at: Instant::now() + GEMINI_CACHE_RETRY,
+                },
+            );
+        }
     }
 
     async fn call_openai(&self, req: CompletionRequest) -> Result<CompletionResponse> {
@@ -1068,10 +1714,68 @@ impl HttpModelProvider {
     }
 
     async fn call_gemini(&self, req: CompletionRequest) -> Result<CompletionResponse> {
-        let url = format!(
-            "{}/v1beta/models/{}:generateContent",
-            self.config.base_url.trim_end_matches('/'),
-            gemini_model_path(&self.model)
+        let plan = self.gemini_cache_plan(&req);
+        let cache = match plan.as_ref() {
+            Some(plan) => self.ensure_gemini_cache(plan).await,
+            None => None,
+        };
+        let mut body = build_gemini_body(self.max_tokens, &req);
+        if let Some(handle) = &cache {
+            let has_dynamic_suffix = body
+                .get("contents")
+                .and_then(Json::as_array)
+                .map(|contents| handle.prefix_len < contents.len())
+                .unwrap_or(false);
+            if has_dynamic_suffix {
+                apply_gemini_cache(&mut body, handle);
+            }
+        }
+
+        let url = gemini_endpoint(
+            &self.config.base_url,
+            &format!("models/{}:generateContent", gemini_model_path(&self.model)),
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .header("x-goog-api-key", &self.config.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CoreError::model(format!("请求失败: {e}")))?;
+        let status = resp.status();
+        let txt = resp
+            .text()
+            .await
+            .map_err(|e| CoreError::model(format!("读取响应失败: {e}")))?;
+        if !status.is_success() {
+            if let Some(handle) = &cache {
+                if is_gemini_cache_error(status, &txt) {
+                    self.invalidate_gemini_cache(handle);
+                    // A stale/unsupported cache must not make an otherwise
+                    // valid generation fail. Retry once with the plain body.
+                    return self.call_gemini_without_cache(req).await;
+                }
+            }
+            return Err(CoreError::model(provider_status_message(
+                &self.config.name,
+                status,
+                &txt,
+                &req,
+            )));
+        }
+        let v: Json = serde_json::from_str(&txt)
+            .map_err(|e| CoreError::model(format!("响应不是合法 JSON: {e}")))?;
+        parse_gemini_response(&v)
+    }
+
+    async fn call_gemini_without_cache(
+        &self,
+        req: CompletionRequest,
+    ) -> Result<CompletionResponse> {
+        let url = gemini_endpoint(
+            &self.config.base_url,
+            &format!("models/{}:generateContent", gemini_model_path(&self.model)),
         );
         let body = build_gemini_body(self.max_tokens, &req);
         let resp = self
@@ -1154,14 +1858,29 @@ impl HttpModelProvider {
                         done = true;
                         break;
                     }
-                    if let Ok(d) = serde_json::from_str::<Json>(data) {
-                        saw_event = true;
-                        openai_stream_event(&d, &mut text, &mut tools, &mut finish, on_delta);
+                    if data.is_empty() {
+                        continue;
                     }
+                    let d = parse_sse_json(data)?;
+                    saw_event = true;
+                    openai_stream_event(&d, &mut text, &mut tools, &mut finish, on_delta);
                 }
             }
             if done {
                 break;
+            }
+        }
+        if !done {
+            if let Some(line) = take_trailing_line(&mut buf) {
+                if let Some(data) = sse_data(&line) {
+                    if data == "[DONE]" {
+                        saw_event = true;
+                    } else if !data.is_empty() {
+                        let event = parse_sse_json(data)?;
+                        saw_event = true;
+                        openai_stream_event(&event, &mut text, &mut tools, &mut finish, on_delta);
+                    }
+                }
             }
         }
         // Some endpoints ignore `stream: true` and return a normal JSON body.
@@ -1169,7 +1888,7 @@ impl HttpModelProvider {
         if !saw_event {
             return self.call_openai(req).await;
         }
-        Ok(finish_accum(text, tools, finish))
+        finish_accum(text, tools, finish)
     }
 
     /// Anthropic `/v1/messages` with `stream: true` (SSE), emitting each text
@@ -1218,10 +1937,27 @@ impl HttpModelProvider {
             buf.extend_from_slice(&chunk);
             for line in drain_lines(&mut buf) {
                 if let Some(data) = sse_data(&line) {
-                    if let Ok(d) = serde_json::from_str::<Json>(data) {
+                    if data == "[DONE]" {
                         saw_event = true;
-                        anthropic_stream_event(&d, &mut text, &mut tools, &mut finish, on_delta);
+                        continue;
                     }
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let d = parse_sse_json(data)?;
+                    saw_event = true;
+                    anthropic_stream_event(&d, &mut text, &mut tools, &mut finish, on_delta);
+                }
+            }
+        }
+        if let Some(line) = take_trailing_line(&mut buf) {
+            if let Some(data) = sse_data(&line) {
+                if data == "[DONE]" {
+                    saw_event = true;
+                } else if !data.is_empty() {
+                    let event = parse_sse_json(data)?;
+                    saw_event = true;
+                    anthropic_stream_event(&event, &mut text, &mut tools, &mut finish, on_delta);
                 }
             }
         }
@@ -1230,7 +1966,7 @@ impl HttpModelProvider {
         if !saw_event {
             return self.call_anthropic(req).await;
         }
-        Ok(finish_accum(text, tools, finish))
+        finish_accum(text, tools, finish)
     }
 
     async fn call_gemini_stream(
@@ -1238,12 +1974,32 @@ impl HttpModelProvider {
         req: CompletionRequest,
         on_delta: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<CompletionResponse> {
+        let plan = self.gemini_cache_plan(&req);
+        let cache = match plan.as_ref() {
+            Some(plan) => self.ensure_gemini_cache(plan).await,
+            None => None,
+        };
+        let mut body = build_gemini_body(self.max_tokens, &req);
+        if let Some(handle) = &cache {
+            let has_dynamic_suffix = body
+                .get("contents")
+                .and_then(Json::as_array)
+                .map(|contents| handle.prefix_len < contents.len())
+                .unwrap_or(false);
+            if has_dynamic_suffix {
+                apply_gemini_cache(&mut body, handle);
+            }
+        }
         let url = format!(
-            "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
-            self.config.base_url.trim_end_matches('/'),
-            gemini_model_path(&self.model)
+            "{}?alt=sse",
+            gemini_endpoint(
+                &self.config.base_url,
+                &format!(
+                    "models/{}:streamGenerateContent",
+                    gemini_model_path(&self.model)
+                ),
+            )
         );
-        let body = build_gemini_body(self.max_tokens, &req);
         let mut resp = self
             .client
             .post(&url)
@@ -1255,8 +2011,25 @@ impl HttpModelProvider {
         let status = resp.status();
         if !status.is_success() {
             let txt = resp.text().await.unwrap_or_default();
+            if let Some(handle) = &cache {
+                if is_gemini_cache_error(status, &txt) {
+                    self.mark_gemini_cache_unavailable(&handle.key);
+                    // Retry without the cache. This preserves correctness for
+                    // endpoints that expose generateContent but not
+                    // cachedContents, while still streaming the answer.
+                    let response = self.call_gemini(req).await?;
+                    if !response.text.is_empty() {
+                        on_delta(&response.text);
+                    }
+                    return Ok(response);
+                }
+            }
             if should_retry_without_stream(status, &txt) {
-                return self.call_gemini(req).await;
+                let response = self.call_gemini(req).await?;
+                if !response.text.is_empty() {
+                    on_delta(&response.text);
+                }
+                return Ok(response);
             }
             return Err(CoreError::model(provider_status_message(
                 &self.config.name,
@@ -1272,6 +2045,7 @@ impl HttpModelProvider {
         let mut buf: Vec<u8> = Vec::new();
         let mut done = false;
         let mut saw_event = false;
+        let mut usage: Option<UsageMetadata> = None;
         while let Some(chunk) = resp
             .chunk()
             .await
@@ -1285,22 +2059,120 @@ impl HttpModelProvider {
                         done = true;
                         break;
                     }
-                    if let Ok(d) = serde_json::from_str::<Json>(data) {
-                        saw_event = true;
-                        gemini_stream_event(&d, &mut text, &mut tools, &mut finish, on_delta)?;
+                    if data.is_empty() {
+                        continue;
                     }
+                    let d = parse_sse_json(data)?;
+                    saw_event = true;
+                    gemini_stream_event_with_usage(
+                        &d,
+                        &mut text,
+                        &mut tools,
+                        &mut finish,
+                        on_delta,
+                        &mut usage,
+                    )?;
                 }
             }
             if done {
                 break;
             }
         }
+        if !done {
+            if let Some(line) = take_trailing_line(&mut buf) {
+                if let Some(data) = sse_data(&line) {
+                    if data == "[DONE]" {
+                        saw_event = true;
+                    } else if !data.is_empty() {
+                        let event = parse_sse_json(data)?;
+                        saw_event = true;
+                        gemini_stream_event_with_usage(
+                            &event,
+                            &mut text,
+                            &mut tools,
+                            &mut finish,
+                            on_delta,
+                            &mut usage,
+                        )?;
+                    }
+                }
+            }
+        }
         // If an endpoint ignores SSE and returns a normal/non-SSE body, retry
         // through the plain Gemini completion path rather than returning empty.
         if !saw_event {
-            return self.call_gemini(req).await;
+            let response = self.call_gemini(req).await?;
+            if !response.text.is_empty() {
+                on_delta(&response.text);
+            }
+            return Ok(response);
         }
-        Ok(finish_accum(text, tools, finish))
+        finish_accum_with_usage(text, tools, finish, usage)
+    }
+
+    async fn complete_once(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        let response = match self.config.protocol {
+            ProviderProtocol::OpenAi => self.call_openai(request.clone()).await,
+            ProviderProtocol::Anthropic => self.call_anthropic(request.clone()).await,
+            ProviderProtocol::Gemini => self.call_gemini(request.clone()).await,
+        }?;
+        if request.protocol == Protocol::NativeToolCall
+            && !request.tools.is_empty()
+            && response.tool_calls.is_empty()
+        {
+            Ok(adapt_react_fallback(response))
+        } else {
+            Ok(response)
+        }
+    }
+
+    async fn complete_streaming_once(
+        &self,
+        request: CompletionRequest,
+        on_delta: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<CompletionResponse> {
+        let response = match self.config.protocol {
+            ProviderProtocol::OpenAi => self.call_openai_stream(request.clone(), on_delta).await,
+            ProviderProtocol::Anthropic => {
+                self.call_anthropic_stream(request.clone(), on_delta).await
+            }
+            ProviderProtocol::Gemini => self.call_gemini_stream(request.clone(), on_delta).await,
+        }?;
+        if request.protocol == Protocol::NativeToolCall
+            && !request.tools.is_empty()
+            && response.tool_calls.is_empty()
+        {
+            Ok(adapt_react_fallback(response))
+        } else {
+            Ok(response)
+        }
+    }
+}
+
+/// Convert a text-protocol retry back into the structured response expected by
+/// the already-running native agent loop. This lets Auto mode recover from a
+/// provider that advertises chat completions but rejects native tools without
+/// restarting the session or treating the ReAct text as a final answer.
+fn adapt_react_fallback(response: CompletionResponse) -> CompletionResponse {
+    let usage = response.usage.clone();
+    match parse_react(&response.text) {
+        Ok(ReActStep::Action {
+            thought,
+            tool,
+            input,
+        }) => CompletionResponse {
+            text: thought.unwrap_or_default(),
+            tool_calls: vec![ToolCallRequest::new(tool, input)],
+            finish: FinishReason::ToolUse,
+            usage,
+        },
+        Ok(ReActStep::Final { answer, .. }) => CompletionResponse {
+            text: answer,
+            tool_calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage,
+        },
+        Err(_) => response,
     }
 }
 
@@ -1316,6 +2188,38 @@ fn is_transient(e: &na_common::CoreError) -> bool {
         || msg.contains("failed to connect")
 }
 
+/// Whether a native tool request was rejected because the endpoint/model does
+/// not implement function calling. In Auto mode we can safely retry the same
+/// turn through the text ReAct protocol, preserving the tool capability rather
+/// than failing the whole writing run.
+fn is_tool_compatibility_error(e: &na_common::CoreError) -> bool {
+    let lower = e.to_string().to_ascii_lowercase();
+    let status = [
+        " 400",
+        " 404",
+        " 405",
+        " 422",
+        "bad request",
+        "unprocessable",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let tool_language = [
+        "tool",
+        "function",
+        "schema",
+        "unsupported",
+        "not support",
+        "does not support",
+        "not enabled",
+        "incompatible",
+        "unknown field",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    status && tool_language
+}
+
 impl ModelProvider for HttpModelProvider {
     fn complete<'a>(
         &'a self,
@@ -1327,25 +2231,39 @@ impl ModelProvider for HttpModelProvider {
             let mut last_err = None;
             for attempt in 0u8..3 {
                 if attempt > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        500 * (attempt as u64),
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64)))
+                        .await;
                 }
-                let result = match self.config.protocol {
-                    ProviderProtocol::OpenAi => self.call_openai(request.clone()).await,
-                    ProviderProtocol::Anthropic => self.call_anthropic(request.clone()).await,
-                    ProviderProtocol::Gemini => self.call_gemini(request.clone()).await,
-                };
+                let result = self.complete_once(request.clone()).await;
                 match result {
                     Ok(resp) => return Ok(resp),
+                    Err(error)
+                        if self.config.tool_mode == ProviderToolMode::Auto
+                            && request.protocol == Protocol::NativeToolCall
+                            && !request.tools.is_empty()
+                            && is_tool_compatibility_error(&error) =>
+                    {
+                        let mut fallback = request.clone();
+                        fallback.protocol = Protocol::ReActText;
+                        return self
+                            .complete_once(fallback)
+                            .await
+                            .map(adapt_react_fallback)
+                            .map_err(|fallback_error| {
+                                fallback_error.with_context(format!(
+                                    "原生工具调用被供应商拒绝，文本兼容模式也失败: {error}"
+                                ))
+                            });
+                    }
                     Err(e) if is_transient(&e) && attempt < 2 => {
                         last_err = Some(e);
                     }
                     Err(e) => return Err(e),
                 }
             }
-            Err(last_err.unwrap())
+            Err(last_err.unwrap_or_else(|| {
+                CoreError::internal("provider retry loop completed without an attempt")
+            }))
         })
     }
 
@@ -1358,31 +2276,47 @@ impl ModelProvider for HttpModelProvider {
             let mut last_err = None;
             for attempt in 0u8..3 {
                 if attempt > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        500 * (attempt as u64),
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64)))
+                        .await;
                 }
-                let result = match self.config.protocol {
-                    ProviderProtocol::OpenAi => {
-                        self.call_openai_stream(request.clone(), on_delta).await
-                    }
-                    ProviderProtocol::Anthropic => {
-                        self.call_anthropic_stream(request.clone(), on_delta).await
-                    }
-                    ProviderProtocol::Gemini => {
-                        self.call_gemini_stream(request.clone(), on_delta).await
-                    }
-                };
+                let result = self
+                    .complete_streaming_once(request.clone(), on_delta)
+                    .await;
                 match result {
                     Ok(resp) => return Ok(resp),
+                    Err(error)
+                        if self.config.tool_mode == ProviderToolMode::Auto
+                            && request.protocol == Protocol::NativeToolCall
+                            && !request.tools.is_empty()
+                            && is_tool_compatibility_error(&error) =>
+                    {
+                        let mut fallback = request.clone();
+                        fallback.protocol = Protocol::ReActText;
+                        return self
+                            .complete_once(fallback)
+                            .await
+                            .map(|response| {
+                                let adapted = adapt_react_fallback(response);
+                                if !adapted.text.is_empty() {
+                                    on_delta(&adapted.text);
+                                }
+                                adapted
+                            })
+                            .map_err(|fallback_error| {
+                                fallback_error.with_context(format!(
+                                    "原生工具调用被供应商拒绝，文本兼容模式也失败: {error}"
+                                ))
+                            });
+                    }
                     Err(e) if is_transient(&e) && attempt < 2 => {
                         last_err = Some(e);
                     }
                     Err(e) => return Err(e),
                 }
             }
-            Err(last_err.unwrap())
+            Err(last_err.unwrap_or_else(|| {
+                CoreError::internal("provider retry loop completed without an attempt")
+            }))
         })
     }
 
@@ -1426,7 +2360,8 @@ impl ProviderStore {
         let settings = if path.exists() {
             let s = std::fs::read_to_string(&path)
                 .map_err(|e| CoreError::from(e).with_context("reading providers.json"))?;
-            serde_json::from_str(&s).unwrap_or_default()
+            serde_json::from_str(&s)
+                .map_err(|e| CoreError::from(e).with_context("parsing providers.json"))?
         } else {
             ProviderSettings::default()
         };
@@ -1440,35 +2375,38 @@ impl ProviderStore {
 
     /// Persist to disk.
     pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).ok();
-            }
-        }
-        let s = serde_json::to_string_pretty(&self.settings)?;
-        std::fs::write(&self.path, s)
-            .map_err(|e| CoreError::from(e).with_context("writing providers.json"))?;
-        Ok(())
+        self.persist_settings(&self.settings)
+    }
+
+    fn persist_settings(&self, settings: &ProviderSettings) -> Result<()> {
+        let json = serde_json::to_string_pretty(settings)?;
+        atomic_write(&self.path, json.as_bytes(), "providers.json")
     }
 
     /// Add or replace a provider (by id) and persist.
     pub fn upsert(&mut self, cfg: ProviderConfig) -> Result<()> {
-        if let Some(existing) = self.settings.providers.iter_mut().find(|p| p.id == cfg.id) {
+        let mut next = self.settings.clone();
+        if let Some(existing) = next.providers.iter_mut().find(|p| p.id == cfg.id) {
             *existing = cfg;
         } else {
-            self.settings.providers.push(cfg);
+            next.providers.push(cfg);
         }
-        self.save()
+        self.persist_settings(&next)?;
+        self.settings = next;
+        Ok(())
     }
 
     /// Remove a provider (by id) and persist; clears active if it was selected.
     pub fn remove(&mut self, id: &str) -> Result<()> {
-        self.settings.providers.retain(|p| p.id != id);
-        if self.settings.active_provider.as_deref() == Some(id) {
-            self.settings.active_provider = None;
-            self.settings.active_model = None;
+        let mut next = self.settings.clone();
+        next.providers.retain(|p| p.id != id);
+        if next.active_provider.as_deref() == Some(id) {
+            next.active_provider = None;
+            next.active_model = None;
         }
-        self.save()
+        self.persist_settings(&next)?;
+        self.settings = next;
+        Ok(())
     }
 
     /// Select the active provider + model and persist.
@@ -1485,9 +2423,12 @@ impl ProviderStore {
                 cfg.name
             )));
         }
-        self.settings.active_provider = Some(provider_id.to_string());
-        self.settings.active_model = Some(model.to_string());
-        self.save()
+        let mut next = self.settings.clone();
+        next.active_provider = Some(provider_id.to_string());
+        next.active_model = Some(model.to_string());
+        self.persist_settings(&next)?;
+        self.settings = next;
+        Ok(())
     }
 
     /// The active (provider, model).
@@ -1531,12 +2472,29 @@ impl ProviderStore {
         })?;
         HttpModelProvider::new(cfg.clone(), model)
     }
+
+    /// Build a live provider with a per-request sampling override.
+    ///
+    /// The persisted provider defaults remain untouched; callers such as the
+    /// Agent discussion surface can tune one turn without changing settings.
+    pub fn build_active_with_sampling(
+        &self,
+        sampling: SamplingParams,
+    ) -> Result<HttpModelProvider> {
+        let (cfg, model) = self.active().ok_or_else(|| {
+            CoreError::invalid_input("尚未选择当前模型供应商，请先在“供应商”里配置并选用")
+        })?;
+        let mut cfg = cfg.clone();
+        cfg.sampling = sampling;
+        HttpModelProvider::new(cfg, model)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::Message;
+    use na_tools::builtin_registry;
 
     fn sample_req(protocol: Protocol) -> CompletionRequest {
         CompletionRequest {
@@ -1570,6 +2528,34 @@ mod tests {
     }
 
     #[test]
+    fn openai_merges_parallel_tool_calls_without_repeating_thought() {
+        let first = ToolCallRequest::with_id(
+            ToolCallId::from_existing("call_1"),
+            "read_file",
+            json!({ "path": "a.md" }),
+        );
+        let second = ToolCallRequest::with_id(
+            ToolCallId::from_existing("call_2"),
+            "read_file",
+            json!({ "path": "b.md" }),
+        );
+        let req = CompletionRequest {
+            messages: vec![
+                Message::assistant_tool_call("同时读取", first),
+                Message::assistant_tool_call("同时读取", second),
+            ],
+            tools: Vec::new(),
+            protocol: Protocol::NativeToolCall,
+            sampling: SamplingParams::default(),
+        };
+        let body = build_openai_body("m", 1024, &req);
+        let assistant = &body["messages"][0];
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(assistant["content"], "同时读取");
+    }
+
+    #[test]
     fn parse_openai_text_and_tool_call() {
         let v = json!({
             "choices": [{
@@ -1599,6 +2585,47 @@ mod tests {
     }
 
     #[test]
+    fn parse_openai_accepts_decoded_tool_arguments_from_gateways() {
+        let v = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": { "path": "chapter.md" }
+                        }
+                    }]
+                }
+            }]
+        });
+        let response = parse_openai_response(&v).unwrap();
+        assert_eq!(response.tool_calls[0].args["path"], "chapter.md");
+    }
+
+    #[test]
+    fn parse_openai_accepts_legacy_function_call_shape() {
+        let v = json!({
+            "choices": [{
+                "finish_reason": "function_call",
+                "message": {
+                    "content": null,
+                    "function_call": {
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"chapter.md\"}"
+                    }
+                }
+            }]
+        });
+        let response = parse_openai_response(&v).unwrap();
+        assert_eq!(response.finish, FinishReason::ToolUse);
+        assert_eq!(response.tool_calls[0].name, "read_file");
+    }
+
+    #[test]
     fn anthropic_body_extracts_system_and_tools() {
         let body = build_anthropic_body("claude-x", 2048, &sample_req(Protocol::NativeToolCall));
         assert_eq!(body["model"], "claude-x");
@@ -1608,6 +2635,28 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"][0]["type"], "text");
         assert_eq!(body["tools"][0]["name"], "write_file");
+    }
+
+    #[test]
+    fn anthropic_tool_errors_are_marked_as_error_results() {
+        let call = ToolCallRequest::with_id(
+            ToolCallId::from_existing("tu_error"),
+            "read_file",
+            json!({ "path": "missing.md" }),
+        );
+        let result = crate::message::ToolResultRef::new(call.id.clone(), "read_file", false, false);
+        let req = CompletionRequest::new(
+            vec![
+                Message::user("读取文件"),
+                Message::assistant_tool_call("我来读取", call),
+                Message::tool("文件不存在", result),
+            ],
+            Vec::new(),
+            Protocol::NativeToolCall,
+        );
+        let body = build_anthropic_body("claude", 1024, &req);
+        assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+        assert_eq!(body["messages"][2]["content"][0]["is_error"], true);
     }
 
     #[test]
@@ -1748,10 +2797,249 @@ mod tests {
     }
 
     #[test]
+    fn gemini_merges_parallel_function_responses_into_one_user_turn() {
+        let first = ToolCallRequest::with_id(
+            ToolCallId::from_existing("call_1"),
+            "read_file",
+            json!({ "path": "a.md" }),
+        );
+        let second = ToolCallRequest::with_id(
+            ToolCallId::from_existing("call_2"),
+            "read_file",
+            json!({ "path": "b.md" }),
+        );
+        let req = CompletionRequest {
+            messages: vec![
+                Message::user("读取两份文件"),
+                Message::assistant_tool_call("同时读取", first.clone()),
+                Message::assistant_tool_call("同时读取", second.clone()),
+                Message::tool(
+                    "A",
+                    crate::message::ToolResultRef::new(first.id.clone(), "read_file", true, false),
+                ),
+                Message::tool(
+                    "B",
+                    crate::message::ToolResultRef::new(second.id.clone(), "read_file", true, false),
+                ),
+            ],
+            tools: Vec::new(),
+            protocol: Protocol::NativeToolCall,
+            sampling: SamplingParams::default(),
+        };
+        let body = build_gemini_body(1024, &req);
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[1]["parts"].as_array().unwrap().len(), 3);
+        assert_eq!(contents[2]["role"], "user");
+        assert_eq!(contents[2]["parts"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn gemini_schema_removes_json_schema_keywords_not_supported_by_gemini() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "workspace path"
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string", "additionalProperties": false }
+                }
+            },
+            "required": ["path"]
+        });
+        let mapped = gemini_schema(&schema);
+        // Gemini's REST API uses uppercase enum names even though local tool
+        // schemas follow JSON Schema's lowercase names.
+        assert_eq!(mapped["type"], "OBJECT");
+        assert!(mapped.get("additionalProperties").is_none());
+        assert_eq!(mapped["properties"]["path"]["type"], "STRING");
+        assert!(mapped["properties"]["path"].get("minLength").is_none());
+        assert_eq!(mapped["properties"]["options"]["type"], "ARRAY");
+        assert_eq!(mapped["properties"]["options"]["items"]["type"], "STRING");
+        assert!(mapped["properties"]["options"]["items"]
+            .get("additionalProperties")
+            .is_none());
+    }
+
+    #[test]
+    fn gemini_schema_maps_nullable_unions_to_a_valid_scalar_type() {
+        let schema = json!({
+            "type": ["null", "string"],
+            "description": "optional label"
+        });
+        let mapped = gemini_schema(&schema);
+        assert_eq!(mapped["type"], "STRING");
+        assert_eq!(mapped["nullable"], true);
+    }
+
+    #[test]
+    fn gemini_schema_falls_back_to_uppercase_object_for_invalid_input() {
+        assert_eq!(gemini_schema(&json!(true))["type"], "OBJECT");
+        assert_eq!(gemini_schema(&json!({}))["type"], "OBJECT");
+    }
+
+    #[test]
+    fn every_builtin_tool_schema_maps_to_gemini_schema_types() {
+        fn assert_types(schema: &Json, tool: &str, path: &str) {
+            let object = schema
+                .as_object()
+                .unwrap_or_else(|| panic!("{tool} schema at {path} is not an object"));
+            let type_name = object
+                .get("type")
+                .and_then(Json::as_str)
+                .unwrap_or_else(|| panic!("{tool} schema at {path} has no type"));
+            assert!(
+                matches!(
+                    type_name,
+                    "OBJECT" | "STRING" | "NUMBER" | "INTEGER" | "BOOLEAN" | "ARRAY"
+                ),
+                "{tool} schema at {path} has invalid Gemini type {type_name}"
+            );
+            if let Some(properties) = object.get("properties").and_then(Json::as_object) {
+                for (name, property) in properties {
+                    assert_types(property, tool, &format!("{path}.properties.{name}"));
+                }
+            }
+            if let Some(items) = object.get("items") {
+                assert_types(items, tool, &format!("{path}.items"));
+            }
+        }
+
+        for spec in builtin_registry().list_specs() {
+            let mapped = gemini_schema(&spec.input_schema);
+            assert_types(&mapped, &spec.name, "$");
+        }
+    }
+
+    #[test]
+    fn compatibility_errors_are_detected_for_native_tool_requests() {
+        let error = CoreError::model("供应商 P 返回 400: function calling is not supported");
+        assert!(is_tool_compatibility_error(&error));
+        let unrelated = CoreError::model("供应商 P 返回 500: temporary overload");
+        assert!(!is_tool_compatibility_error(&unrelated));
+    }
+
+    #[test]
+    fn react_fallback_is_adapted_back_to_a_native_tool_call() {
+        let response = CompletionResponse::react(
+            "Thought: 先读章节\nAction: read_file\nAction Input: {\"path\":\"chapter.md\"}",
+        );
+        let adapted = adapt_react_fallback(response);
+        assert_eq!(adapted.finish, FinishReason::ToolUse);
+        assert_eq!(adapted.tool_calls.len(), 1);
+        assert_eq!(adapted.tool_calls[0].name, "read_file");
+        assert_eq!(adapted.tool_calls[0].args["path"], "chapter.md");
+    }
+
+    #[test]
     fn gemini_body_omits_tools_for_react() {
         let body = build_gemini_body(1024, &sample_req(Protocol::ReActText));
         assert!(body.get("tools").is_none());
         assert!(body.get("toolConfig").is_none());
+    }
+
+    #[test]
+    fn gemini_cache_body_and_application_keep_only_dynamic_contents() {
+        let req = CompletionRequest {
+            messages: vec![
+                Message::system("stable system instructions"),
+                Message::user("initial context"),
+                Message::assistant("dynamic turn"),
+            ],
+            tools: Vec::new(),
+            protocol: Protocol::NativeToolCall,
+            sampling: SamplingParams::default(),
+        };
+        let (system, contents) = gemini_contents(&req.messages, req.protocol);
+        let plan = GeminiCachePlan {
+            key: GeminiCacheKey {
+                base_url: "https://example.test".into(),
+                model: "models/gemini-2.5-flash".into(),
+                api_key_hash: 1,
+                system_hash: 2,
+                prefix_hash: 3,
+                prefix_len: 1,
+            },
+            model_resource: "models/gemini-2.5-flash".into(),
+            system: system.unwrap(),
+            prefix_contents: vec![contents[0].clone()],
+            prefix_len: 1,
+        };
+        let cache_body = build_gemini_cache_body(&plan);
+        assert_eq!(cache_body["model"], "models/gemini-2.5-flash");
+        assert!(cache_body["contents"].is_array());
+
+        let mut body = build_gemini_body(256, &req);
+        apply_gemini_cache(
+            &mut body,
+            &GeminiCacheHandle {
+                key: plan.key,
+                resource_name: "cachedContents/test".into(),
+                prefix_len: 1,
+            },
+        );
+        assert_eq!(body["cachedContent"], "cachedContents/test");
+        assert!(body.get("systemInstruction").is_none());
+        assert_eq!(body["contents"].as_array().unwrap().len(), 1);
+        assert_eq!(body["contents"][0]["role"], "model");
+    }
+
+    #[test]
+    fn gemini_cache_is_disabled_after_a_tool_round_trip_begins() {
+        let config = ProviderConfig {
+            id: "gemini".into(),
+            name: "Gemini".into(),
+            protocol: ProviderProtocol::Gemini,
+            tool_mode: ProviderToolMode::Auto,
+            base_url: "https://generativelanguage.googleapis.com".into(),
+            api_key: "key".into(),
+            models: vec!["gemini-2.5-flash".into()],
+            default_model: None,
+            max_tokens: None,
+            sampling: SamplingParams::default(),
+        };
+        let provider = HttpModelProvider::new(config, "gemini-2.5-flash").unwrap();
+        let call = ToolCallRequest::new("read_file", json!({ "path": "chapter.md" }));
+        let result = crate::message::ToolResultRef::new(call.id.clone(), "read_file", true, false);
+        let req = CompletionRequest {
+            messages: vec![
+                Message::system("stable instructions"),
+                Message::assistant_tool_call("read", call),
+                Message::tool("chapter", result),
+            ],
+            tools: vec![],
+            protocol: Protocol::NativeToolCall,
+            sampling: SamplingParams::default(),
+        };
+        assert!(provider.gemini_cache_plan(&req).is_none());
+    }
+
+    #[test]
+    fn parse_gemini_usage_reads_cached_content_tokens() {
+        let response = parse_gemini_response(&json!({
+            "candidates": [{
+                "finishReason": "STOP",
+                "content": { "parts": [{ "text": "ok" }] }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 9000,
+                "candidatesTokenCount": 40,
+                "totalTokenCount": 9040,
+                "cachedContentTokenCount": 8800
+            }
+        }))
+        .unwrap();
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.prompt_token_count, Some(9000));
+        assert_eq!(usage.response_token_count, Some(40));
+        assert_eq!(usage.cached_content_token_count, Some(8800));
     }
 
     #[test]
@@ -1822,7 +3110,7 @@ mod tests {
         }
         assert_eq!(text, "你好呀");
         assert_eq!(streamed.borrow().as_str(), "你好呀");
-        let resp = finish_accum(text, tools, finish);
+        let resp = finish_accum(text, tools, finish).unwrap();
         assert_eq!(resp.finish, FinishReason::ToolUse);
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "write_file");
@@ -1876,7 +3164,7 @@ mod tests {
             );
         }
         assert_eq!(text, "思考");
-        let resp = finish_accum(text, tools, finish);
+        let resp = finish_accum(text, tools, finish).unwrap();
         assert_eq!(resp.finish, FinishReason::ToolUse);
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "read_file");
@@ -1932,7 +3220,7 @@ mod tests {
 
         assert_eq!(text, "先读");
         assert_eq!(streamed.borrow().as_str(), "先读");
-        let resp = finish_accum(text, tools, finish);
+        let resp = finish_accum(text, tools, finish).unwrap();
         assert_eq!(resp.finish, FinishReason::ToolUse);
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "read_file");
@@ -1950,6 +3238,27 @@ mod tests {
         let lines = drain_lines(&mut buf);
         assert_eq!(lines, vec!["data: 你好".to_string()]);
         assert_eq!(sse_data(&lines[0]), Some("你好"));
+    }
+
+    #[test]
+    fn malformed_sse_and_tool_arguments_are_errors() {
+        assert!(parse_sse_json("{ malformed").is_err());
+
+        let tools = vec![ToolAccum {
+            id: "call_bad".into(),
+            name: "write_file".into(),
+            args: "{ malformed".into(),
+        }];
+        assert!(finish_accum(String::new(), tools, Some(FinishReason::ToolUse)).is_err());
+    }
+
+    #[test]
+    fn trailing_sse_line_is_preserved_without_a_newline() {
+        let mut buffer = b"data: {\"ok\":true}".to_vec();
+        let line = take_trailing_line(&mut buffer).unwrap();
+        assert!(buffer.is_empty());
+        let data = sse_data(&line).unwrap();
+        assert_eq!(parse_sse_json(data).unwrap()["ok"], true);
     }
 
     #[test]
@@ -2047,6 +3356,35 @@ mod tests {
         let path = temp_path("empty");
         let store = ProviderStore::open(&path).unwrap();
         assert!(store.build_active().is_err());
+    }
+
+    #[test]
+    fn corrupt_store_is_reported_instead_of_reset() {
+        let path = temp_path("corrupt");
+        std::fs::write(&path, b"{ not valid json").unwrap();
+
+        let error = ProviderStore::open(&path).unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Serialization));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not valid json");
+    }
+
+    #[test]
+    fn failed_provider_writes_do_not_change_live_settings() {
+        let path = temp_path("write-failure");
+        let mut store = ProviderStore::open(&path).unwrap();
+        store.upsert(cfg("kept")).unwrap();
+        let before = store.settings().clone();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(store.upsert(cfg("new")).is_err());
+        assert_eq!(store.settings(), &before);
+        assert!(store.remove("kept").is_err());
+        assert_eq!(store.settings(), &before);
+        assert!(store.set_active("kept", "m1").is_err());
+        assert_eq!(store.settings(), &before);
+
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]

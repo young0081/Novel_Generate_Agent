@@ -193,16 +193,15 @@ async fn rpc_line_protocol_round_trip() {
     assert!(r["content"].as_str().unwrap().contains("内容"));
 }
 
-/// Cancellation makes the engine's context refuse further work cleanly.
+/// Cancellation is scoped to active work and does not permanently poison the engine.
 #[tokio::test]
-async fn cancellation_is_observed() {
+async fn cancellation_allows_a_later_operation() {
     let engine = Engine::new(temp_root("cancel")).unwrap();
     engine.cancel();
-    // A cancelled context surfaces a cancelled error result rather than running.
     let r = engine
         .invoke_tool("write_file", json!({ "path": "x.md", "content": "y" }))
         .await;
-    assert!(!r.ok);
+    assert!(r.ok, "{}", r.content);
 }
 
 /// Phase-2: skills + subagents are reachable through a fully-wired engine.

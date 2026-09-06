@@ -16,16 +16,17 @@
 //! (`writer.md` / `outline.md`) as system steering at the start of every run.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use na_common::{json, Json, Result};
+use na_common::{json, CancellationToken, Json, Result};
 use na_runtime::{
     register_runtime_tools, CompletionResponse, GoalLoop, LoopHookRegistry, LoopOutcome,
     MockProvider, ModelProvider, ProjectProfile, Protocol, Session, SkillRegistry,
 };
+use na_sandbox::{Capability, PermissionPolicy};
 use na_tools::{
-    builtin_registry, HookRegistry, ToolContext, ToolContextBuilder, ToolRegistry, ToolResult,
-    ToolSpec,
+    builtin_registry, HookRegistry, SecureHttpFetcher, ToolContext, ToolContextBuilder,
+    ToolRegistry, ToolResult, ToolSpec,
 };
 
 /// The core engine: registry + shared tool context + optional loop hooks.
@@ -36,6 +37,11 @@ pub struct Engine {
     pub ctx: ToolContext,
     /// Observability hooks fired around each agent-loop step (default empty).
     pub loop_hooks: Arc<LoopHookRegistry>,
+    /// Cancellation generation shared by operations that are currently active.
+    /// A cancelled generation is replaced before the next operation starts.
+    cancellation: Mutex<CancellationToken>,
+    /// Keep externally invoked mutations and goal loops exclusive per engine.
+    operation_gate: tokio::sync::RwLock<()>,
 }
 
 impl Engine {
@@ -43,9 +49,15 @@ impl Engine {
     /// stores under `<workspace_root>/.na/`. Registers the built-in tools and uses
     /// empty hooks.
     pub fn new(workspace_root: impl AsRef<Path>) -> Result<Self> {
+        let ctx = ToolContextBuilder::new(workspace_root)
+            .policy(default_engine_policy())
+            .fetcher(Arc::new(SecureHttpFetcher::default()))
+            .build()?;
         Ok(Engine {
             registry: builtin_registry(),
-            ctx: ToolContextBuilder::new(workspace_root).build()?,
+            cancellation: Mutex::new(ctx.cancel.clone()),
+            operation_gate: tokio::sync::RwLock::new(()),
+            ctx,
             loop_hooks: Arc::new(LoopHookRegistry::new()),
         })
     }
@@ -62,12 +74,16 @@ impl Engine {
         loop_hooks: Arc<LoopHookRegistry>,
     ) -> Result<Self> {
         let ctx = ToolContextBuilder::new(workspace_root)
+            .policy(default_engine_policy())
             .hooks(hooks)
+            .fetcher(Arc::new(SecureHttpFetcher::default()))
             .build()?;
         let mut registry = builtin_registry();
         register_runtime_tools(&mut registry, subagent_provider, skills);
         Ok(Engine {
             registry,
+            cancellation: Mutex::new(ctx.cancel.clone()),
+            operation_gate: tokio::sync::RwLock::new(()),
             ctx,
             loop_hooks,
         })
@@ -78,6 +94,8 @@ impl Engine {
     pub fn from_context(ctx: ToolContext) -> Self {
         Engine {
             registry: builtin_registry(),
+            cancellation: Mutex::new(ctx.cancel.clone()),
+            operation_gate: tokio::sync::RwLock::new(()),
             ctx,
             loop_hooks: Arc::new(LoopHookRegistry::new()),
         }
@@ -93,7 +111,20 @@ impl Engine {
     /// process-output → audit). Never panics; failures come back as an error
     /// [`ToolResult`].
     pub async fn invoke_tool(&self, name: &str, args: Json) -> ToolResult {
-        self.registry.invoke(name, args, &self.ctx).await
+        let mutating = self
+            .registry
+            .get(name)
+            .map(|tool| tool.spec().mutating)
+            .unwrap_or(true);
+        if mutating {
+            let _lease = self.operation_gate.write().await;
+            let ctx = self.new_operation_context();
+            self.registry.invoke(name, args, &ctx).await
+        } else {
+            let _lease = self.operation_gate.read().await;
+            let ctx = self.new_operation_context();
+            self.registry.invoke(name, args, &ctx).await
+        }
     }
 
     /// Drive a goal loop with a deterministic, offline, *scripted* model.
@@ -124,6 +155,7 @@ impl Engine {
         protocol: Protocol,
         provider: &dyn ModelProvider,
     ) -> Result<(LoopOutcome, Session)> {
+        let _lease = self.operation_gate.write().await;
         let mut session = Session::new(title);
 
         // Inject the author's standing instructions (writer.md / outline.md).
@@ -131,22 +163,63 @@ impl Engine {
             session.push(msg);
         }
 
+        let ctx = self.new_operation_context();
         let outcome = GoalLoop::with_protocol(protocol)
             .loop_hooks(self.loop_hooks.clone())
-            .run(goal, &mut session, provider, &self.registry, &self.ctx)
+            .run(goal, &mut session, provider, &self.registry, &ctx)
             .await?;
         Ok((outcome, session))
     }
 
     /// Signal cancellation to every in-flight tool / loop sharing this context.
     pub fn cancel(&self) {
-        self.ctx.cancel.cancel();
+        self.cancellation_token().cancel();
     }
 
     /// The canonical workspace root.
     pub fn workspace_root(&self) -> &Path {
         self.ctx.jail.root()
     }
+
+    /// Create the context for a new externally-driven operation.
+    ///
+    /// The returned context uses the active cancellation generation. Once a
+    /// generation has been cancelled, the first subsequent operation replaces
+    /// it so an interrupted run does not permanently disable the engine.
+    ///
+    /// Hosts that invoke [`GoalLoop`] directly must use this method instead of
+    /// borrowing [`Engine::ctx`], otherwise they would retain a cancelled token
+    /// after the user interrupts an earlier operation.
+    pub fn new_operation_context(&self) -> ToolContext {
+        let token = {
+            let mut current = self
+                .cancellation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if current.is_cancelled() {
+                *current = CancellationToken::new();
+            }
+            current.clone()
+        };
+        let mut ctx = self.ctx.clone();
+        ctx.cancel = token;
+        ctx
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// The production engine allows workspace-scoped capabilities but disables the
+/// unrestricted shell. A shell cannot be confined by setting its current
+/// directory, and a command blacklist is bypassable through another
+/// interpreter. Trusted hosts can opt in through [`Engine::from_context`].
+fn default_engine_policy() -> PermissionPolicy {
+    PermissionPolicy::permissive().deny(Capability::ExecuteShell, "**")
 }
 
 impl std::fmt::Debug for Engine {
@@ -243,6 +316,46 @@ mod tests {
         assert_eq!(engine.registry.len(), 26);
         assert!(engine.registry.contains("spawn_subagent"));
         assert!(engine.registry.contains("skill_list"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_does_not_poison_later_operations() {
+        let engine = Engine::new(temp_root("cancel-reuse")).unwrap();
+        engine.cancel();
+
+        let result = engine
+            .invoke_tool(
+                "write_file",
+                json!({ "path": "after-cancel.md", "content": "still usable" }),
+            )
+            .await;
+        assert!(result.ok, "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn default_web_fetcher_is_real_and_blocks_private_networks() {
+        let engine = Engine::new(temp_root("secure-fetch")).unwrap();
+        let result = engine
+            .invoke_tool("web_fetch", json!({ "url": "http://127.0.0.1:9/" }))
+            .await;
+        assert!(!result.ok);
+        assert_eq!(result.data["code"], "security_blocked");
+    }
+
+    #[tokio::test]
+    async fn default_engine_denies_shell_blacklist_bypasses() {
+        let engine = Engine::new(temp_root("shell-denied")).unwrap();
+        for command in [
+            "powershell -NoProfile -Command Remove-Item victim.txt",
+            "python -c \"import os; os.remove('victim.txt')\"",
+            "cmd /C del victim.txt",
+        ] {
+            let result = engine
+                .invoke_tool("shell", json!({ "command": command }))
+                .await;
+            assert!(!result.ok, "command unexpectedly allowed: {command}");
+            assert_eq!(result.data["code"], "permission_denied");
+        }
     }
 
     #[tokio::test]

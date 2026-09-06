@@ -10,10 +10,10 @@ interface EmptyStateProps {
 export default function EmptyState({ title, text, action }: EmptyStateProps) {
   return (
     <div className="empty">
-      <BrushMark className="empty__icon" />
-      <div className="empty__title">{title}</div>
+      <BrushMark className="empty__icon" aria-hidden="true" />
+      <h3 className="empty__title">{title}</h3>
       {text ? <p className="empty__text">{text}</p> : null}
-      {action}
+      {action ? <div className="empty__action">{action}</div> : null}
     </div>
   );
 }

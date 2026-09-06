@@ -1,0 +1,86 @@
+/* Shared cinnabar seal. Loaded with the app shell so the brand never flashes unstyled. */
+.seal {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+  isolation: isolate;
+  background: radial-gradient(
+    120% 120% at 30% 22%,
+    var(--cinnabar-bright),
+    var(--cinnabar) 55%,
+    var(--cinnabar-deep) 100%
+  );
+  color: #fdf1ea;
+  font-family: var(--serif);
+  font-weight: 700;
+  box-shadow:
+    inset 0 0 0 var(--seal-frame, 1.5px) rgba(255, 240, 232, 0.34),
+    inset 0 0 0 calc(var(--seal-frame, 1.5px) + 1px) var(--cinnabar-deep),
+    inset 0 1px 2px rgba(255, 255, 255, 0.28),
+    0 1px 2px rgba(120, 30, 22, 0.45);
+  user-select: none;
+  animation: app-seal-set var(--dur-4) var(--ease-spring) both;
+}
+
+.seal__char {
+  position: relative;
+  z-index: 2;
+  line-height: 1;
+  transform: translateY(0.02em);
+  text-shadow: 0 1px 1px rgba(120, 30, 22, 0.5);
+}
+
+/* Full brand mark used in the shell chrome. Semantic seals below still use
+   the carved-character component for progress and confirmation states. */
+.brand-mark {
+  display: block;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  object-fit: contain;
+  border-radius: 9px;
+  filter: drop-shadow(0 2px 3px rgba(30, 24, 16, 0.18));
+}
+
+.brand-mark--titlebar {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.seal::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48'><filter id='s'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2'/></filter><rect width='48' height='48' filter='url(%23s)' opacity='0.3'/></svg>");
+  mix-blend-mode: multiply;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.seal--soft {
+  box-shadow:
+    inset 0 0 0 var(--seal-frame, 2px) rgba(255, 240, 232, 0.4),
+    inset 0 0 0 calc(var(--seal-frame, 2px) + 1.5px) var(--cinnabar-deep),
+    inset 0 1px 3px rgba(255, 255, 255, 0.3),
+    0 4px 12px rgba(151, 41, 30, 0.28);
+}
+
+.modal__seal .seal {
+  animation: app-modal-seal var(--dur-5) var(--ease-spring) 60ms both;
+}
+
+@keyframes app-seal-set {
+  0% { opacity: 0; transform: scale(0.8) rotate(-6deg); }
+  70% { transform: scale(1.04) rotate(1deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@keyframes app-modal-seal {
+  0% { opacity: 0; transform: scale(0.5) rotate(-12deg); }
+  65% { transform: scale(1.08) rotate(3deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}

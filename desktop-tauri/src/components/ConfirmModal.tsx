@@ -5,9 +5,10 @@
 // (spring up) and close (settle down) are animated; under prefers-reduced-
 // motion the close window collapses to an instant via the stylesheet guard.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import Seal from "./Seal";
 import { Spinner } from "./Spinner";
+import { layerExitDelay } from "../lib/dialogLayer";
 
 interface ConfirmModalProps {
   open: boolean;
@@ -42,6 +43,10 @@ export default function ConfirmModal({
   const [mounted, setMounted] = useState(open);
   const [closing, setClosing] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const bodyId = useId();
 
   useEffect(() => {
     if (open) {
@@ -58,7 +63,7 @@ export default function ConfirmModal({
         setMounted(false);
         setClosing(false);
         closeTimer.current = null;
-      }, CLOSE_MS);
+      }, layerExitDelay(CLOSE_MS));
     }
     return () => {
       if (closeTimer.current) {
@@ -70,8 +75,52 @@ export default function ConfirmModal({
 
   useEffect(() => {
     if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const frame = window.requestAnimationFrame(() => {
+      const initialTarget = cancelRef.current?.disabled ? modalRef.current : cancelRef.current;
+      initialTarget?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onCancel();
+      if (e.key === "Escape") {
+        if (!busy) onCancel();
+        return;
+      }
+      if (e.key !== "Tab") return;
+
+      const dialog = modalRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) {
+        e.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (
+        e.shiftKey &&
+        (active === first || active === dialog || !dialog.contains(active))
+      ) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -87,23 +136,39 @@ export default function ConfirmModal({
       }}
     >
       <div
+        ref={modalRef}
         className={`modal${closing ? " is-closing" : ""}`}
-        role="dialog"
+        role="alertdialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={bodyId}
+        aria-busy={busy || undefined}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="modal__seal">
+        <div className="modal__seal" aria-hidden="true">
           <Seal size={46} char={sealChar} tone="soft" />
         </div>
         <div className="modal__body">
-          <h3 className="modal__title">{title}</h3>
-          <div className="modal__text">{body}</div>
+          <h3 className="modal__title" id={titleId}>
+            {title}
+          </h3>
+          <div className="modal__text" id={bodyId}>
+            {body}
+          </div>
         </div>
         <div className="modal__foot">
-          <button className="btn" onClick={onCancel} disabled={busy}>
+          <button
+            type="button"
+            ref={cancelRef}
+            className="btn"
+            onClick={onCancel}
+            disabled={busy}
+          >
             {cancelLabel}
           </button>
           <button
+            type="button"
             className={`btn ${danger ? "btn--danger" : "btn--primary"}`}
             onClick={onConfirm}
             disabled={busy}

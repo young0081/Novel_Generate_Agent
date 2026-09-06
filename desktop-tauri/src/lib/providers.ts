@@ -64,6 +64,15 @@ export interface ProviderSettings {
   active_model?: string | null;
 }
 
+/** Same-window notification used by mounted workspaces after settings change. */
+export const PROVIDERS_CHANGED_EVENT = "novel:providers-changed";
+
+function publishProvidersChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
+  }
+}
+
 async function invoke<T>(
   cmd: string,
   args?: Record<string, unknown>,
@@ -83,12 +92,16 @@ export async function getProviders(): Promise<ProviderSettings> {
 export async function saveProvider(
   config: ProviderConfig,
 ): Promise<ProviderSettings> {
-  return invoke<ProviderSettings>("providers_save", { config });
+  const settings = await invoke<ProviderSettings>("providers_save", { config });
+  publishProvidersChanged();
+  return settings;
 }
 
 /** Delete a provider by id. Returns the new settings. */
 export async function deleteProvider(id: string): Promise<ProviderSettings> {
-  return invoke<ProviderSettings>("providers_delete", { id });
+  const settings = await invoke<ProviderSettings>("providers_delete", { id });
+  publishProvidersChanged();
+  return settings;
 }
 
 /** Set the active provider + model. Returns the new settings. */
@@ -96,10 +109,12 @@ export async function setActiveProvider(
   providerId: string,
   model: string,
 ): Promise<ProviderSettings> {
-  return invoke<ProviderSettings>("providers_set_active", {
+  const settings = await invoke<ProviderSettings>("providers_set_active", {
     providerId,
     model,
   });
+  publishProvidersChanged();
+  return settings;
 }
 
 /**

@@ -1,7 +1,7 @@
 //! Consistency guard for checking generated content against story state.
 
 use crate::state::{Severity, StoryState};
-use na_common::Result;
+use na_common::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
 /// Consistency guard for post-generation validation.
@@ -16,26 +16,30 @@ impl ConsistencyGuard {
 
     /// Check chapter content against story state.
     ///
-    /// This is a placeholder that will be fully implemented when integrating
-    /// with na-runtime. For MVP, this provides the structure and returns a
-    /// basic passing report.
+    /// Basic checking currently requires a model-backed evaluator. Returning a
+    /// passing report without evaluating the content would be unsafe because it
+    /// lets callers publish a chapter under a false consistency guarantee.
     pub fn check_basic(
         &self,
-        _chapter_content: &str,
-        _story_state: &StoryState,
+        chapter_content: &str,
+        story_state: &StoryState,
     ) -> Result<ConsistencyReport> {
-        // TODO: Implement actual consistency checking
-        // This will be called from na-runtime with model access
-        Ok(ConsistencyReport {
-            overall_pass: true,
-            issues: vec![],
-            statistics: IssueStatistics {
-                critical_issues: 0,
-                high_issues: 0,
-                medium_issues: 0,
-                low_issues: 0,
-            },
-        })
+        if chapter_content.trim().is_empty() {
+            return Err(CoreError::invalid_input(
+                "chapter content must not be empty",
+            ));
+        }
+        if story_state.hard_constraints.is_empty()
+            && story_state.characters.is_empty()
+            && story_state.world.rules.is_empty()
+        {
+            return Err(CoreError::invalid_input(
+                "story state has no constraints, characters, or world rules to check",
+            ));
+        }
+        Err(CoreError::tool(
+            "model-backed consistency evaluation is not configured; chapter was not checked",
+        ))
     }
 }
 
@@ -69,11 +73,11 @@ pub struct ConsistencyIssue {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IssueCategory {
-    CharacterOOC,       // Out of character
-    KnowledgeLeak,      // Character knows something they shouldn't
-    TimelineError,      // Timeline contradiction
+    CharacterOOC,        // Out of character
+    KnowledgeLeak,       // Character knows something they shouldn't
+    TimelineError,       // Timeline contradiction
     ConstraintViolation, // Hard constraint violated
-    LogicError,         // General logic inconsistency
+    LogicError,          // General logic inconsistency
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,5 +123,29 @@ mod tests {
             },
         };
         assert!(!report2.has_critical_issues());
+    }
+
+    #[test]
+    fn check_basic_never_reports_an_unchecked_chapter_as_passing() {
+        let mut state = StoryState::default();
+        state.hard_constraints.push(crate::state::Constraint {
+            id: "c1".to_string(),
+            description: "主角绝不背叛朋友".to_string(),
+            severity: Severity::Critical,
+        });
+
+        let error = ConsistencyGuard::new()
+            .check_basic("主角走进城门。", &state)
+            .unwrap_err();
+        assert!(error.is(na_common::ErrorKind::Tool), "{error}");
+        assert!(error.message.contains("not configured"));
+    }
+
+    #[test]
+    fn check_basic_rejects_empty_input() {
+        let error = ConsistencyGuard::new()
+            .check_basic("  ", &StoryState::default())
+            .unwrap_err();
+        assert!(error.is(na_common::ErrorKind::InvalidInput));
     }
 }

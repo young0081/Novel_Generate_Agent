@@ -3,12 +3,20 @@
 import { NextResponse } from "next/server";
 
 import { coreRpc } from "@/lib/coreClient";
+import { isTrustedLocalRpcRequest } from "@/lib/requestSecurity";
 
 // The bridge uses Node's child_process, so this must run on the Node runtime.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  if (!isTrustedLocalRpcRequest(req)) {
+    return NextResponse.json(
+      { jsonrpc: "2.0", id: null, error: { code: -32001, message: "cross-origin RPC denied" } },
+      { status: 403 },
+    );
+  }
+
   let body: { method?: unknown; params?: unknown };
   try {
     body = await req.json();

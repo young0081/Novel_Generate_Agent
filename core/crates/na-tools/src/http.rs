@@ -1,4 +1,4 @@
-//! A minimal, dependency-free HTTP/1.1 [`Fetcher`] over raw `tokio::net`.
+//! HTTP [`Fetcher`] implementations.
 //!
 //! [`HttpFetcher`] implements the [`Fetcher`](crate::Fetcher) trait for plain
 //! `http://` URLs using a raw [`tokio::net::TcpStream`] — no `reqwest`, no
@@ -15,7 +15,12 @@
 //! The whole exchange runs under a [`tokio::time::timeout`] derived from
 //! `timeout_ms`. `https://` URLs are rejected with
 //! [`CoreError::invalid_input`] — TLS is intentionally out of scope here and is
-//! meant to be supplied by a separate TLS-capable fetcher in a later phase.
+//! meant for deterministic tests and explicitly configured legacy callers.
+//!
+//! [`SecureHttpFetcher`] is the production fetcher. It supports HTTP and HTTPS
+//! through the platform TLS stack, disables implicit proxying and automatic
+//! redirects, validates every redirect target, rejects credentials and private
+//! network destinations by default, and caps response bodies at 8 MiB.
 //!
 //! Status codes `>= 400` are surfaced as a [`CoreError`] (`tool` for client/4xx,
 //! `model` for server/5xx) so the caller sees an error rather than an HTML error
@@ -128,6 +133,237 @@ impl Fetcher for HttpFetcher {
             }
         })
     }
+}
+
+/// A production HTTP/HTTPS fetcher with SSRF-resistant defaults.
+///
+/// Private, loopback, link-local, documentation, multicast and reserved
+/// addresses are rejected before connecting. Tests or trusted local
+/// integrations may opt in with [`allow_private_networks`](Self::allow_private_networks).
+#[derive(Debug, Clone, Copy)]
+pub struct SecureHttpFetcher {
+    /// Total timeout for DNS, connect, redirects and body reads.
+    pub timeout_ms: u64,
+    /// Maximum number of redirects followed after validating each target.
+    pub max_redirects: usize,
+    /// Whether private/local destinations may be contacted.
+    pub allow_private_networks: bool,
+}
+
+impl Default for SecureHttpFetcher {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 30_000,
+            max_redirects: 5,
+            allow_private_networks: false,
+        }
+    }
+}
+
+impl SecureHttpFetcher {
+    /// Construct a fetcher with an explicit total timeout.
+    pub fn new(timeout_ms: u64) -> Self {
+        Self {
+            timeout_ms,
+            ..Self::default()
+        }
+    }
+
+    /// Permit private and loopback destinations for trusted local services.
+    pub fn allow_private_networks(mut self, allow: bool) -> Self {
+        self.allow_private_networks = allow;
+        self
+    }
+
+    async fn fetch_inner(&self, raw_url: &str) -> Result<String> {
+        let mut url = parse_secure_url(raw_url)?;
+
+        for redirects in 0..=self.max_redirects {
+            let response = self.send_once(&url).await?;
+            let status = response.status();
+
+            if status.is_redirection() {
+                if redirects == self.max_redirects {
+                    return Err(CoreError::tool(format!(
+                        "HTTP redirect limit ({}) exceeded for {raw_url}",
+                        self.max_redirects
+                    )));
+                }
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .ok_or_else(|| {
+                        CoreError::protocol(format!(
+                            "HTTP {status} response from {url} omitted Location"
+                        ))
+                    })?
+                    .to_str()
+                    .map_err(|_| CoreError::protocol("redirect Location is not valid text"))?;
+                url = parse_secure_url(
+                    url.join(location)
+                        .map_err(|e| {
+                            CoreError::invalid_input(format!(
+                                "invalid redirect target {location:?}: {e}"
+                            ))
+                        })?
+                        .as_str(),
+                )?;
+                continue;
+            }
+
+            if status.is_client_error() || status.is_server_error() {
+                let message = format!("HTTP {status} for {url}");
+                return Err(if status.is_server_error() {
+                    CoreError::model(message)
+                } else {
+                    CoreError::tool(message)
+                });
+            }
+
+            let mut response = response;
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(map_reqwest_error)? {
+                let next_len = body
+                    .len()
+                    .checked_add(chunk.len())
+                    .ok_or_else(|| CoreError::tool("HTTP response body length overflow"))?;
+                if next_len > MAX_BODY_BYTES {
+                    return Err(CoreError::tool(format!(
+                        "HTTP response exceeded {MAX_BODY_BYTES} bytes"
+                    )));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            return Ok(String::from_utf8_lossy(&body).into_owned());
+        }
+
+        Err(CoreError::internal("unreachable redirect state"))
+    }
+
+    async fn send_once(&self, url: &reqwest::Url) -> Result<reqwest::Response> {
+        let host = url
+            .host_str()
+            .ok_or_else(|| CoreError::invalid_input(format!("URL has no host: {url}")))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| CoreError::invalid_input(format!("URL has no usable port: {url}")))?;
+
+        let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| CoreError::from(e).with_context(format!("resolving host {host}")))?
+            .collect();
+        if addresses.is_empty() {
+            return Err(CoreError::tool(format!(
+                "host {host:?} resolved to no addresses"
+            )));
+        }
+        if !self.allow_private_networks {
+            for address in &addresses {
+                if !is_public_ip(address.ip()) {
+                    return Err(CoreError::security(format!(
+                        "network request to private or reserved address {} is blocked",
+                        address.ip()
+                    )));
+                }
+            }
+        }
+
+        // Pin this request to the address we validated. Automatic redirects and
+        // environment proxies are disabled so neither can bypass destination
+        // validation.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(self.timeout_ms.max(1)))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .user_agent("na-tools/0.1")
+            .resolve(host, addresses[0])
+            .build()
+            .map_err(map_reqwest_error)?;
+        client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(map_reqwest_error)
+    }
+}
+
+impl Fetcher for SecureHttpFetcher {
+    fn fetch<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move {
+            let timeout = Duration::from_millis(self.timeout_ms.max(1));
+            match tokio::time::timeout(timeout, self.fetch_inner(url)).await {
+                Ok(result) => result,
+                Err(_) => Err(CoreError::timeout(format!(
+                    "HTTP fetch of {url} exceeded {} ms",
+                    self.timeout_ms
+                ))),
+            }
+        })
+    }
+}
+
+fn parse_secure_url(url: &str) -> Result<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| CoreError::invalid_input(format!("invalid URL {url:?}: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(CoreError::invalid_input(format!(
+            "unsupported URL scheme {:?}; expected http or https",
+            parsed.scheme()
+        )));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(CoreError::security(
+            "URLs containing embedded credentials are not allowed",
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err(CoreError::invalid_input(format!("URL has no host: {url}")));
+    }
+    Ok(parsed)
+}
+
+fn map_reqwest_error(error: reqwest::Error) -> CoreError {
+    if error.is_timeout() {
+        CoreError::timeout(format!("HTTP request timed out: {error}"))
+    } else {
+        CoreError::tool(format!("HTTP request failed: {error}"))
+    }
+}
+
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => is_public_ipv4(ip),
+        std::net::IpAddr::V6(ip) => {
+            if let Some(v4) = ip.to_ipv4() {
+                return is_public_ipv4(v4);
+            }
+            let segments = ip.segments();
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && (segments[0] & 0xfe00) != 0xfc00 // unique-local fc00::/7
+                && (segments[0] & 0xffc0) != 0xfe80 // link-local fe80::/10
+                && (segments[0] & 0xffc0) != 0xfec0 // deprecated site-local fec0::/10
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8) // documentation
+        }
+    }
+}
+
+fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(a == 0
+        || a == 10
+        || a == 127
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224)
 }
 
 /// A parsed `http://` URL broken into its addressing parts.
@@ -585,5 +821,51 @@ mod tests {
         let fetcher: std::sync::Arc<dyn Fetcher> = std::sync::Arc::new(HttpFetcher::new(5_000));
         let got = fetcher.fetch(&url).await.unwrap();
         assert_eq!(got, "hello");
+    }
+
+    #[test]
+    fn secure_fetcher_accepts_https_and_rejects_unsafe_urls() {
+        let https = parse_secure_url("https://example.com/path?q=1").unwrap();
+        assert_eq!(https.scheme(), "https");
+        assert!(parse_secure_url("file:///etc/passwd").is_err());
+        let credentialed = parse_secure_url("https://user:secret@example.com/").unwrap_err();
+        assert!(credentialed.is(na_common::ErrorKind::SecurityBlocked));
+    }
+
+    #[test]
+    fn private_address_classifier_covers_ssrf_ranges() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.168.1.1",
+            "100.64.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            assert!(!is_public_ip(ip), "expected {ip} to be non-public");
+        }
+        assert!(is_public_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn secure_fetcher_blocks_private_networks_by_default() {
+        let err = SecureHttpFetcher::new(1_000)
+            .fetch("http://127.0.0.1:9/")
+            .await
+            .unwrap_err();
+        assert!(err.is(na_common::ErrorKind::SecurityBlocked), "{err}");
+    }
+
+    #[tokio::test]
+    async fn secure_fetcher_can_reach_opted_in_local_http() {
+        let url =
+            serve_once(|_req| b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecure".to_vec()).await;
+        let fetcher = SecureHttpFetcher::new(5_000).allow_private_networks(true);
+        assert_eq!(fetcher.fetch(&url).await.unwrap(), "secure");
     }
 }

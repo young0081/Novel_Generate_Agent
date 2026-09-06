@@ -260,6 +260,7 @@ mod tests {
             text: "all done".into(),
             tool_calls: vec![call],
             finish: FinishReason::Stop,
+            usage: None,
         };
         let action = orch.parse_response(&resp).unwrap();
         assert!(matches!(action, AgentAction::Final { .. }));

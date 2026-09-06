@@ -7,7 +7,9 @@ import "../styles/providers.css";
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent,
 } from "react";
@@ -16,6 +18,7 @@ import { Spinner } from "../components/Spinner";
 import { SkeletonGrid } from "../components/Skeleton";
 import EmptyState from "../components/EmptyState";
 import ConfirmModal from "../components/ConfirmModal";
+import BatchActions from "../components/BatchActions";
 import { useToast } from "../components/Toast";
 import {
   IconPlus,
@@ -35,6 +38,8 @@ import {
   IconTools,
 } from "../components/icons";
 import { describeError } from "../lib/core";
+import { runBatch } from "../lib/batch";
+import { useDialogFocus } from "../lib/dialogLayer";
 import {
   getProviders,
   saveProvider,
@@ -175,6 +180,15 @@ export default function ProvidersScreen() {
     null,
   );
   const [deleting, setDeleting] = useState(false);
+  const [manageMode, setManageMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [pendingBulk, setPendingBulk] = useState<ProviderConfig[] | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const drawerBusyRef = useRef(false);
+  const drawerTitleId = useId();
+  drawerBusyRef.current = saving || test.busy;
 
   // per-card "applying active" busy id
   const [applyingId, setApplyingId] = useState<string | null>(null);
@@ -200,6 +214,14 @@ export default function ProvidersScreen() {
   const activeProvider = settings.active_provider ?? null;
   const activeModel = settings.active_model ?? null;
 
+  useEffect(() => {
+    const valid = new Set(providers.map((provider) => provider.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [providers]);
+
   const activeProviderName = useMemo(() => {
     const p = providers.find((x) => x.id === activeProvider);
     return p?.name ?? null;
@@ -223,9 +245,11 @@ export default function ProvidersScreen() {
   }, []);
 
   const closeDrawer = useCallback(() => {
-    if (saving || test.busy) return;
+    if (drawerBusyRef.current) return;
     setEditing(null);
-  }, [saving, test.busy]);
+  }, []);
+
+  useDialogFocus(editing !== null, drawerRef, closeDrawer);
 
   // ---- apply a quick-fill preset (fills the empty/blank fields only) ----
   const applyPreset = useCallback((preset: ProviderPreset) => {
@@ -348,6 +372,34 @@ export default function ProvidersScreen() {
 
   // ---- delete ----
   const confirmDelete = useCallback(async () => {
+    if (pendingBulk) {
+      setBulkDeleting(true);
+      setBulkProgress({ done: 0, total: pendingBulk.length });
+      let latest: ProviderSettings | null = null;
+      try {
+        const result = await runBatch(
+          pendingBulk,
+          async (provider) => {
+            latest = await deleteProvider(provider.id);
+          },
+          (done, total) => setBulkProgress({ done, total }),
+        );
+        if (latest) setSettings(latest);
+        const completedIds = new Set(result.completed.map((provider) => provider.id));
+        setSelectedIds((current) => new Set([...current].filter((id) => !completedIds.has(id))));
+        setEditing((prev) => (prev && completedIds.has(prev.id) ? null : prev));
+        if (result.failed.length === 0) {
+          toast.ok(`已删除 ${result.completed.length} 个供应商`);
+        } else {
+          toast.err(`已删除 ${result.completed.length} 个，${result.failed.length} 个删除失败`);
+        }
+        setPendingBulk(null);
+      } finally {
+        setBulkDeleting(false);
+        setBulkProgress(null);
+      }
+      return;
+    }
     if (!pendingDelete) return;
     setDeleting(true);
     try {
@@ -362,7 +414,7 @@ export default function ProvidersScreen() {
     } finally {
       setDeleting(false);
     }
-  }, [pendingDelete, toast]);
+  }, [pendingBulk, pendingDelete, toast]);
 
   // ---- pick active provider+model ----
   const applyActive = useCallback(
@@ -428,8 +480,33 @@ export default function ProvidersScreen() {
     ? PROVIDER_PRESETS.filter((p) => p.protocol === editing.protocol)
     : [];
 
+  const allSelected = providers.length > 0 && providers.every((provider) => selectedIds.has(provider.id));
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleAll = useCallback(() => {
+    setSelectedIds(allSelected ? new Set() : new Set(providers.map((provider) => provider.id)));
+  }, [allSelected, providers]);
+
   const headerActions = (
     <>
+      {providers.length > 1 && (
+        <button
+          className={`btn btn--ghost btn--sm${manageMode ? " is-active" : ""}`}
+          onClick={() => {
+            setManageMode((value) => !value);
+            setSelectedIds(new Set());
+          }}
+          aria-pressed={manageMode}
+        >
+          {manageMode ? "完成" : "批量管理"}
+        </button>
+      )}
       <button
         className="btn btn--ghost btn--icon"
         onClick={() => void refresh()}
@@ -490,7 +567,27 @@ export default function ProvidersScreen() {
             }
           />
         ) : (
-          <div className="slip-grid">
+          <>
+            {manageMode && providers.length > 0 && (
+              <BatchActions
+                selectedCount={selectedIds.size}
+                totalCount={providers.length}
+                allSelected={allSelected}
+                onToggleAll={toggleAll}
+                onClear={() => setSelectedIds(new Set())}
+                label="批量管理供应商"
+              >
+                <button
+                  type="button"
+                  className="btn btn--danger btn--sm"
+                  disabled={selectedIds.size === 0 || bulkDeleting}
+                  onClick={() => setPendingBulk(providers.filter((provider) => selectedIds.has(provider.id)))}
+                >
+                  <IconTrash size={13} /> 删除已选
+                </button>
+              </BatchActions>
+            )}
+            <div className="slip-grid">
             {providers.map((p) => {
               const isActiveProv = p.id === activeProvider;
               const curModel = isActiveProv ? activeModel : null;
@@ -506,6 +603,16 @@ export default function ProvidersScreen() {
                 >
                   <div className="prov-card__head">
                     <span className="prov-card__name">
+                      {manageMode && (
+                        <input
+                          type="checkbox"
+                          className="batch-select"
+                          checked={selectedIds.has(p.id)}
+                          onChange={() => toggleSelected(p.id)}
+                          aria-label={`选择供应商：${p.name || p.id}`}
+                          disabled={bulkDeleting}
+                        />
+                      )}
                       <IconProviders size={16} className="prov-card__glyph" />
                       <span className="prov-card__name-text">
                         {p.name || "（未命名供应商）"}
@@ -627,14 +734,31 @@ export default function ProvidersScreen() {
                 </article>
               );
             })}
-          </div>
+            </div>
+          </>
         )}
       </div>
 
       {editing && (
-        <aside className="drawer">
+        <>
+          <div
+            className="provider-drawer-backdrop"
+            aria-hidden="true"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeDrawer();
+            }}
+          />
+          <aside
+            ref={drawerRef}
+            className="drawer provider-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={drawerTitleId}
+            aria-busy={saving || test.busy || undefined}
+            tabIndex={-1}
+          >
           <div className="drawer__head">
-            <h3>{isNew ? "添加供应商" : "编辑供应商"}</h3>
+            <h3 id={drawerTitleId}>{isNew ? "添加供应商" : "编辑供应商"}</h3>
             <button
               className="btn btn--ghost btn--icon"
               onClick={closeDrawer}
@@ -676,6 +800,7 @@ export default function ProvidersScreen() {
               <label className="field__label">名称</label>
               <input
                 className="input"
+                data-autofocus
                 value={editing.name}
                 onChange={(e) =>
                   setEditing({ ...editing, name: e.target.value })
@@ -1131,28 +1256,40 @@ export default function ProvidersScreen() {
               {isNew ? "添加供应商" : "保存修改"}
             </button>
           </div>
-        </aside>
+          </aside>
+        </>
       )}
 
       <ConfirmModal
-        open={pendingDelete !== null}
-        title="删除该供应商？"
+        open={pendingDelete !== null || pendingBulk !== null}
+        title={pendingBulk ? `删除选中的 ${pendingBulk.length} 个供应商？` : "删除该供应商？"}
         sealChar="删"
         danger
-        busy={deleting}
+        busy={deleting || bulkDeleting}
         confirmLabel="确认删除"
         body={
-          <>
-            将删除供应商
-            <br />
-            <code>{pendingDelete?.name || pendingDelete?.id}</code>
-            <br />
-            其下的模型配置一并移除，此操作不可撤销。
-          </>
+          pendingBulk ? (
+            <>
+              将删除选中的 {pendingBulk.length} 个供应商及其模型配置。
+              {bulkProgress && <><br />正在处理：{bulkProgress.done} / {bulkProgress.total}</>}
+              <br />此操作不可撤销。
+            </>
+          ) : (
+            <>
+              将删除供应商
+              <br />
+              <code>{pendingDelete?.name || pendingDelete?.id}</code>
+              <br />
+              其下的模型配置一并移除，此操作不可撤销。
+            </>
+          )
         }
         onConfirm={() => void confirmDelete()}
         onCancel={() => {
-          if (!deleting) setPendingDelete(null);
+          if (!deleting && !bulkDeleting) {
+            setPendingDelete(null);
+            setPendingBulk(null);
+          }
         }}
       />
     </Panel>

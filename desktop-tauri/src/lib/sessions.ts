@@ -59,6 +59,8 @@ export const KIND_LABEL: Record<string, string> = {
   writing: "创作",
   discuss: "探讨",
   planning: "策划",
+  simulation: "推演",
+  ide: "IDE 运笔",
 };
 
 /** Format an epoch-millis timestamp as a compact local date-time. */

@@ -13,21 +13,21 @@ import 'screens/settings_screen.dart';
 // ── 水墨国风色板 ────────────────────────────────────────────────
 class InkPalette {
   InkPalette._();
-  static const paper      = Color(0xFFEDE6D7);
-  static const paperHi    = Color(0xFFF6F0E6);
-  static const paperLo    = Color(0xFFE0D6C1);
-  static const paperEdge  = Color(0xFFCFC1A3);
-  static const ink        = Color(0xFF21201B);
-  static const ink2       = Color(0xFF47433A);
-  static const ink3       = Color(0xFF6C6258);
-  static const ink4       = Color(0xFF968C7A);
-  static const inkGhost   = Color(0xFFB0A490);
-  static const cinnabar   = Color(0xFFB43022);
+  static const paper = Color(0xFFEDE6D7);
+  static const paperHi = Color(0xFFF6F0E6);
+  static const paperLo = Color(0xFFE0D6C1);
+  static const paperEdge = Color(0xFFCFC1A3);
+  static const ink = Color(0xFF21201B);
+  static const ink2 = Color(0xFF47433A);
+  static const ink3 = Color(0xFF6C6258);
+  static const ink4 = Color(0xFF968C7A);
+  static const inkGhost = Color(0xFFB0A490);
+  static const cinnabar = Color(0xFFB43022);
   static const cinnabarHi = Color(0xFFC5422D);
   static const cinnabarWash = Color(0x14B43022);
-  static const teal       = Color(0xFF4E6560);
-  static const gold       = Color(0xFFC4955A);
-  static const line       = Color(0xFFD2C6AF);
+  static const teal = Color(0xFF4E6560);
+  static const gold = Color(0xFFC4955A);
+  static const line = Color(0xFFD2C6AF);
 }
 
 void main() {
@@ -93,7 +93,7 @@ ThemeData _buildTheme() {
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: _InkPageTransitionBuilder(),
-        TargetPlatform.iOS:     _InkPageTransitionBuilder(),
+        TargetPlatform.iOS: _InkPageTransitionBuilder(),
       },
     ),
     appBarTheme: AppBarTheme(
@@ -126,8 +126,11 @@ ThemeData _buildTheme() {
       }),
       labelTextStyle: WidgetStateProperty.resolveWith((states) {
         if (states.contains(WidgetState.selected)) {
-          return const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-              color: InkPalette.cinnabar);
+          return const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: InkPalette.cinnabar,
+          );
         }
         return const TextStyle(fontSize: 11, color: InkPalette.ink4);
       }),
@@ -144,7 +147,9 @@ ThemeData _buildTheme() {
       ),
     ),
     dividerTheme: const DividerThemeData(
-      color: InkPalette.line, thickness: 0.8, space: 0,
+      color: InkPalette.line,
+      thickness: 0.8,
+      space: 0,
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
@@ -172,7 +177,10 @@ ThemeData _buildTheme() {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         textStyle: const TextStyle(
-          fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 0.3),
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
+        ),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
@@ -184,9 +192,7 @@ ThemeData _buildTheme() {
       ),
     ),
     textButtonTheme: TextButtonThemeData(
-      style: TextButton.styleFrom(
-        foregroundColor: InkPalette.cinnabar,
-      ),
+      style: TextButton.styleFrom(foregroundColor: InkPalette.cinnabar),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
@@ -201,19 +207,24 @@ class _InkPageTransitionBuilder extends PageTransitionsBuilder {
 
   @override
   Widget buildTransitions<T>(
-    PageRoute<T> route, BuildContext context,
-    Animation<double> animation, Animation<double> secondaryAnimation,
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
     Widget child,
   ) {
     if (Motion.reduced(context)) return child;
     final curved = CurvedAnimation(
-      parent: animation, curve: Motion.standard, reverseCurve: Motion.smooth,
+      parent: animation,
+      curve: Motion.standard,
+      reverseCurve: Motion.smooth,
     );
     return FadeTransition(
       opacity: curved,
       child: SlideTransition(
         position: Tween<Offset>(
-          begin: const Offset(0, 0.028), end: Offset.zero,
+          begin: const Offset(0, 0.028),
+          end: Offset.zero,
         ).animate(curved),
         child: child,
       ),
@@ -231,26 +242,58 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   AiProvider? _provider;
+  int _providerGeneration = 0;
   int _index = 0;
   int _direction = 1;
   bool _loaded = false;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
-    LocalStorage.instance.loadProvider().then((p) {
+    _loadProvider();
+  }
+
+  Future<void> _loadProvider() async {
+    try {
+      final provider = await LocalStorage.instance.loadProvider();
       if (!mounted) return;
-      setState(() { _provider = p; _loaded = true; });
+      setState(() {
+        _provider = provider;
+        _providerGeneration++;
+        _loadError = null;
+        _loaded = true;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = error.toString();
+        _loaded = true;
+      });
+    }
+  }
+
+  void _retryLoadProvider() {
+    setState(() {
+      _loadError = null;
+      _loaded = false;
     });
+    _loadProvider();
   }
 
   void _onProviderChanged(AiProvider p) {
-    setState(() => _provider = p);
+    setState(() {
+      _provider = p;
+      _providerGeneration++;
+    });
   }
 
   void _selectTab(int i) {
     if (i == _index) return;
-    setState(() { _direction = i > _index ? 1 : -1; _index = i; });
+    setState(() {
+      _direction = i > _index ? 1 : -1;
+      _index = i;
+    });
   }
 
   static const _titles = ['创作', '章节', '记忆', '快照', '设置'];
@@ -265,24 +308,32 @@ class _HomePageState extends State<HomePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 72, height: 72,
+                width: 72,
+                height: 72,
                 decoration: BoxDecoration(
                   color: InkPalette.cinnabar,
                   borderRadius: BorderRadius.circular(18),
                 ),
                 alignment: Alignment.center,
-                child: const Text('墨',
+                child: const Text(
+                  '墨',
                   style: TextStyle(
-                    fontSize: 36, fontWeight: FontWeight.w700,
-                    color: InkPalette.paperHi, letterSpacing: 2,
+                    fontSize: 36,
+                    fontWeight: FontWeight.w700,
+                    color: InkPalette.paperHi,
+                    letterSpacing: 2,
                   ),
                 ),
               ),
               const SizedBox(height: 24),
-              const SizedBox(width: 24, height: 24,
+              const SizedBox(
+                width: 24,
+                height: 24,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(InkPalette.cinnabar),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    InkPalette.cinnabar,
+                  ),
                 ),
               ),
             ],
@@ -291,9 +342,57 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
+    if (_loadError case final message?) {
+      return Scaffold(
+        backgroundColor: InkPalette.paper,
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.key_off_rounded,
+                    size: 42,
+                    color: InkPalette.cinnabar,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '无法读取 API Key',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: InkPalette.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      height: 1.5,
+                      color: InkPalette.ink3,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  FilledButton.icon(
+                    onPressed: _retryLoadProvider,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('重试'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     final screens = <Widget>[
       StudioScreen(
-        key: ValueKey(_provider?.apiKey ?? ''),
+        key: ValueKey(_providerGeneration),
         provider: _provider,
         onGoSettings: () => _selectTab(4),
       ),
@@ -318,7 +417,8 @@ class _HomePageState extends State<HomePage> {
             opacity: anim,
             child: SlideTransition(
               position: Tween<Offset>(
-                begin: const Offset(0, 0.25), end: Offset.zero,
+                begin: const Offset(0, 0.25),
+                end: Offset.zero,
               ).animate(anim),
               child: child,
             ),
@@ -328,15 +428,18 @@ class _HomePageState extends State<HomePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 26, height: 26,
+                width: 26,
+                height: 26,
                 decoration: BoxDecoration(
                   color: InkPalette.cinnabar,
                   borderRadius: BorderRadius.circular(6),
                 ),
                 alignment: Alignment.center,
-                child: const Text('墨',
+                child: const Text(
+                  '墨',
                   style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
                     color: InkPalette.paperHi,
                   ),
                 ),
@@ -345,8 +448,10 @@ class _HomePageState extends State<HomePage> {
               Text(
                 '墨·创作  ·  ${_titles[_index]}',
                 style: const TextStyle(
-                  fontSize: 15.5, fontWeight: FontWeight.w600,
-                  color: InkPalette.ink2, letterSpacing: 0.4,
+                  fontSize: 15.5,
+                  fontWeight: FontWeight.w600,
+                  color: InkPalette.ink2,
+                  letterSpacing: 0.4,
                 ),
               ),
             ],
@@ -368,7 +473,8 @@ class _HomePageState extends State<HomePage> {
             opacity: anim,
             child: SlideTransition(
               position: Tween<Offset>(
-                begin: Offset(dx, 0), end: Offset.zero,
+                begin: Offset(dx, 0),
+                end: Offset.zero,
               ).animate(anim),
               child: child,
             ),
@@ -378,9 +484,7 @@ class _HomePageState extends State<HomePage> {
           alignment: Alignment.topCenter,
           children: [...previousChildren, ?currentChild],
         ),
-        child: KeyedSubtree(
-          key: ValueKey<int>(_index), child: screens[_index],
-        ),
+        child: KeyedSubtree(key: ValueKey<int>(_index), child: screens[_index]),
       ),
       bottomNavigationBar: Container(
         decoration: const BoxDecoration(

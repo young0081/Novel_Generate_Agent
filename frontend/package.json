@@ -4,19 +4,24 @@
   "private": true,
   "description": "AI 驱动的小说创作平台 —— Next.js 创作前端（通过 Node 桥调用 Rust 核心层）",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
-    "start": "next start"
+    "test": "tsx --test lib/*.test.ts",
+    "start": "next start --hostname 127.0.0.1"
   },
   "dependencies": {
-    "next": "14.2.15",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
-    "typescript": "5.6.3",
     "@types/node": "20.16.11",
-    "@types/react": "18.3.11",
-    "@types/react-dom": "18.3.0"
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "tsx": "4.23.0",
+    "typescript": "5.6.3"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
   }
 }

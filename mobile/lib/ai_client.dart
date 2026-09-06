@@ -35,7 +35,9 @@ class AiProvider {
 
   factory AiProvider.fromJson(Map<String, dynamic> j) => AiProvider(
     name: j['name'] as String? ?? '',
-    protocol: j['protocol'] == 'anthropic' ? AiProtocol.anthropic : AiProtocol.openAi,
+    protocol: j['protocol'] == 'anthropic'
+        ? AiProtocol.anthropic
+        : AiProtocol.openAi,
     baseUrl: j['baseUrl'] as String? ?? '',
     apiKey: j['apiKey'] as String? ?? '',
     model: j['model'] as String? ?? '',
@@ -48,37 +50,43 @@ const List<AiProvider> kProviderPresets = [
     name: 'DeepSeek',
     protocol: AiProtocol.openAi,
     baseUrl: 'https://api.deepseek.com/v1',
-    apiKey: '', model: 'deepseek-chat',
+    apiKey: '',
+    model: 'deepseek-chat',
   ),
   AiProvider(
     name: 'OpenAI',
     protocol: AiProtocol.openAi,
     baseUrl: 'https://api.openai.com/v1',
-    apiKey: '', model: 'gpt-4o-mini',
+    apiKey: '',
+    model: 'gpt-4o-mini',
   ),
   AiProvider(
     name: 'Kimi',
     protocol: AiProtocol.openAi,
     baseUrl: 'https://api.moonshot.cn/v1',
-    apiKey: '', model: 'moonshot-v1-8k',
+    apiKey: '',
+    model: 'moonshot-v1-8k',
   ),
   AiProvider(
     name: '智谱 GLM',
     protocol: AiProtocol.openAi,
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    apiKey: '', model: 'glm-4-flash',
+    apiKey: '',
+    model: 'glm-4-flash',
   ),
   AiProvider(
     name: 'Anthropic',
     protocol: AiProtocol.anthropic,
     baseUrl: 'https://api.anthropic.com',
-    apiKey: '', model: 'claude-3-5-haiku-latest',
+    apiKey: '',
+    model: 'claude-3-5-haiku-latest',
   ),
   AiProvider(
     name: 'Ollama（本地）',
     protocol: AiProtocol.openAi,
     baseUrl: 'http://localhost:11434/v1',
-    apiKey: 'ollama', model: 'llama3.1',
+    apiKey: 'ollama',
+    model: 'llama3.1',
   ),
 ];
 
@@ -90,11 +98,138 @@ class AiMessage {
   Map<String, dynamic> toJson() => {'role': role, 'content': content};
 }
 
+class AiStreamDelta {
+  final String content;
+  final String reasoning;
+
+  const AiStreamDelta({this.content = '', this.reasoning = ''});
+}
+
+class AiRequestCancelledException implements Exception {
+  const AiRequestCancelledException();
+
+  @override
+  String toString() => '请求已取消';
+}
+
+String _apiErrorMessage(Object? error) {
+  if (error is Map) {
+    final message = error['message'];
+    if (message is String && message.isNotEmpty) return message;
+  }
+  return error?.toString() ?? '未知 API 错误';
+}
+
+/// Decode complete SSE `data` fields while preserving lines split across
+/// arbitrary HTTP chunks (including chunks split inside a UTF-8 character).
+Stream<String> decodeSseData(Stream<List<int>> byteStream) async* {
+  final dataLines = <String>[];
+
+  await for (final line
+      in byteStream.transform(utf8.decoder).transform(const LineSplitter())) {
+    if (line.isEmpty) {
+      if (dataLines.isNotEmpty) {
+        yield dataLines.join('\n');
+        dataLines.clear();
+      }
+      continue;
+    }
+    if (line.startsWith(':')) continue;
+
+    final colon = line.indexOf(':');
+    final field = colon < 0 ? line : line.substring(0, colon);
+    if (field != 'data') continue;
+
+    var value = colon < 0 ? '' : line.substring(colon + 1);
+    if (value.startsWith(' ')) value = value.substring(1);
+    dataLines.add(value);
+  }
+
+  if (dataLines.isNotEmpty) yield dataLines.join('\n');
+}
+
+Stream<AiStreamDelta> decodeOpenAiStream(Stream<List<int>> byteStream) async* {
+  await for (final data in decodeSseData(byteStream)) {
+    if (data.trim() == '[DONE]') return;
+
+    Object? decoded;
+    try {
+      decoded = jsonDecode(data);
+    } on FormatException {
+      continue;
+    }
+    if (decoded is! Map<String, dynamic>) continue;
+    if (decoded['error'] != null) {
+      throw Exception('API 错误: ${_apiErrorMessage(decoded['error'])}');
+    }
+
+    final choices = decoded['choices'];
+    if (choices is! List || choices.isEmpty) continue;
+    final choice = choices.first;
+    if (choice is! Map) continue;
+    final delta = choice['delta'];
+    if (delta is! Map) continue;
+
+    final reasoning = delta['reasoning_content'];
+    final content = delta['content'];
+    final event = AiStreamDelta(
+      reasoning: reasoning is String ? reasoning : '',
+      content: content is String ? content : '',
+    );
+    if (event.reasoning.isNotEmpty || event.content.isNotEmpty) yield event;
+  }
+}
+
+Stream<AiStreamDelta> decodeAnthropicStream(
+  Stream<List<int>> byteStream,
+) async* {
+  await for (final data in decodeSseData(byteStream)) {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(data);
+    } on FormatException {
+      continue;
+    }
+    if (decoded is! Map<String, dynamic>) continue;
+    if (decoded['type'] == 'error') {
+      throw Exception('Anthropic 错误: ${_apiErrorMessage(decoded['error'])}');
+    }
+    if (decoded['type'] != 'content_block_delta') continue;
+
+    final delta = decoded['delta'];
+    if (delta is! Map) continue;
+    final text = delta['text'];
+    if (text is String && text.isNotEmpty) {
+      yield AiStreamDelta(content: text);
+    }
+  }
+}
+
 // ── AI 客户端 ────────────────────────────────────────────────────────
 class AiClient {
   final AiProvider provider;
+  final Duration requestTimeout;
+  final http.Client _httpClient;
+  bool _cancelled = false;
 
-  AiClient(this.provider);
+  AiClient(
+    this.provider, {
+    http.Client? httpClient,
+    this.requestTimeout = const Duration(seconds: 120),
+  }) : _httpClient = httpClient ?? http.Client();
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    _httpClient.close();
+  }
+
+  void close() => _httpClient.close();
+
+  Uri _uri(String path) {
+    final base = provider.baseUrl.replaceFirst(RegExp(r'/+$'), '');
+    return Uri.parse('$base$path');
+  }
 
   // 流式聊天：每收到一个 content token 调用 onToken；推理模型的思维链通过 onReasoning 传出
   Future<String> chatStream(
@@ -103,18 +238,33 @@ class AiClient {
     void Function(String reasoning)? onReasoning,
     int maxTokens = 2048,
   }) async {
-    return switch (provider.protocol) {
-      AiProtocol.openAi => _openAiStream(messages, onToken, maxTokens, onReasoning),
-      AiProtocol.anthropic => _anthropicStream(messages, onToken, maxTokens),
-    };
+    try {
+      return await switch (provider.protocol) {
+        AiProtocol.openAi => _openAiStream(
+          messages,
+          onToken,
+          maxTokens,
+          onReasoning,
+        ),
+        AiProtocol.anthropic => _anthropicStream(messages, onToken, maxTokens),
+      };
+    } catch (_) {
+      if (_cancelled) throw const AiRequestCancelledException();
+      rethrow;
+    }
   }
 
   // 非流式聊天（快速调用，用于意图检测等场景）
   Future<String> chat(List<AiMessage> messages, {int maxTokens = 512}) async {
-    return switch (provider.protocol) {
-      AiProtocol.openAi => _openAiChat(messages, maxTokens),
-      AiProtocol.anthropic => _anthropicChat(messages, maxTokens),
-    };
+    try {
+      return await switch (provider.protocol) {
+        AiProtocol.openAi => _openAiChat(messages, maxTokens),
+        AiProtocol.anthropic => _anthropicChat(messages, maxTokens),
+      };
+    } catch (_) {
+      if (_cancelled) throw const AiRequestCancelledException();
+      rethrow;
+    }
   }
 
   // ── OpenAI 兼容流式 ────────────────────────────────────────────────
@@ -124,7 +274,7 @@ class AiClient {
     int maxTokens,
     void Function(String)? onReasoning,
   ) async {
-    final uri = Uri.parse('${provider.baseUrl}/chat/completions');
+    final uri = _uri('/chat/completions');
     final req = http.Request('POST', uri)
       ..headers.addAll({
         'Content-Type': 'application/json',
@@ -137,35 +287,22 @@ class AiClient {
         'max_tokens': maxTokens,
       });
 
-    final response = await req.send();
+    final response = await _httpClient.send(req).timeout(requestTimeout);
     if (response.statusCode != 200) {
-      final body = await response.stream.bytesToString();
+      final body = await response.stream.bytesToString().timeout(
+        requestTimeout,
+      );
       throw Exception('API 错误 ${response.statusCode}: $body');
     }
 
     final buf = StringBuffer();
-    await for (final chunk in response.stream.transform(utf8.decoder)) {
-      for (final line in chunk.split('\n')) {
-        final trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        final data = trimmed.substring(6);
-        if (data == '[DONE]') break;
-        try {
-          final json = jsonDecode(data) as Map<String, dynamic>;
-          final deltaMap = (json['choices'] as List?)
-              ?.firstOrNull?['delta'] as Map<String, dynamic>?;
-          // 思维链（DeepSeek-R1 / o1 等推理模型）
-          final reasoning = deltaMap?['reasoning_content'] as String?;
-          if (reasoning != null && reasoning.isNotEmpty) {
-            onReasoning?.call(reasoning);
-          }
-          // 正式回复
-          final delta = deltaMap?['content'] as String?;
-          if (delta != null && delta.isNotEmpty) {
-            buf.write(delta);
-            onToken(delta);
-          }
-        } catch (_) {}
+    await for (final event in decodeOpenAiStream(
+      response.stream,
+    ).timeout(requestTimeout)) {
+      if (event.reasoning.isNotEmpty) onReasoning?.call(event.reasoning);
+      if (event.content.isNotEmpty) {
+        buf.write(event.content);
+        onToken(event.content);
       }
     }
     return buf.toString();
@@ -173,18 +310,20 @@ class AiClient {
 
   // ── OpenAI 兼容非流式 ──────────────────────────────────────────────
   Future<String> _openAiChat(List<AiMessage> messages, int maxTokens) async {
-    final res = await http.post(
-      Uri.parse('${provider.baseUrl}/chat/completions'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ${provider.apiKey}',
-      },
-      body: jsonEncode({
-        'model': provider.model,
-        'messages': messages.map((m) => m.toJson()).toList(),
-        'max_tokens': maxTokens,
-      }),
-    );
+    final res = await _httpClient
+        .post(
+          _uri('/chat/completions'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ${provider.apiKey}',
+          },
+          body: jsonEncode({
+            'model': provider.model,
+            'messages': messages.map((m) => m.toJson()).toList(),
+            'max_tokens': maxTokens,
+          }),
+        )
+        .timeout(requestTimeout);
     if (res.statusCode != 200) {
       throw Exception('API 错误 ${res.statusCode}: ${res.body}');
     }
@@ -199,7 +338,7 @@ class AiClient {
     int maxTokens,
   ) async {
     final system = messages.where((m) => m.role == 'system').toList();
-    final other  = messages.where((m) => m.role != 'system').toList();
+    final other = messages.where((m) => m.role != 'system').toList();
     final body = <String, dynamic>{
       'model': provider.model,
       'max_tokens': maxTokens,
@@ -208,7 +347,7 @@ class AiClient {
     };
     if (system.isNotEmpty) body['system'] = system.first.content;
 
-    final req = http.Request('POST', Uri.parse('${provider.baseUrl}/v1/messages'))
+    final req = http.Request('POST', _uri('/v1/messages'))
       ..headers.addAll({
         'Content-Type': 'application/json',
         'x-api-key': provider.apiKey,
@@ -216,27 +355,19 @@ class AiClient {
       })
       ..body = jsonEncode(body);
 
-    final response = await req.send();
+    final response = await _httpClient.send(req).timeout(requestTimeout);
     if (response.statusCode != 200) {
-      final b = await response.stream.bytesToString();
+      final b = await response.stream.bytesToString().timeout(requestTimeout);
       throw Exception('Anthropic 错误 ${response.statusCode}: $b');
     }
 
     final buf = StringBuffer();
-    await for (final chunk in response.stream.transform(utf8.decoder)) {
-      for (final line in chunk.split('\n')) {
-        final trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        try {
-          final json = jsonDecode(trimmed.substring(6)) as Map<String, dynamic>;
-          if (json['type'] == 'content_block_delta') {
-            final delta = json['delta']?['text'] as String?;
-            if (delta != null && delta.isNotEmpty) {
-              buf.write(delta);
-              onToken(delta);
-            }
-          }
-        } catch (_) {}
+    await for (final event in decodeAnthropicStream(
+      response.stream,
+    ).timeout(requestTimeout)) {
+      if (event.content.isNotEmpty) {
+        buf.write(event.content);
+        onToken(event.content);
       }
     }
     return buf.toString();
@@ -245,7 +376,7 @@ class AiClient {
   // ── Anthropic 非流式 ───────────────────────────────────────────────
   Future<String> _anthropicChat(List<AiMessage> messages, int maxTokens) async {
     final system = messages.where((m) => m.role == 'system').toList();
-    final other  = messages.where((m) => m.role != 'system').toList();
+    final other = messages.where((m) => m.role != 'system').toList();
     final body = <String, dynamic>{
       'model': provider.model,
       'max_tokens': maxTokens,
@@ -253,15 +384,17 @@ class AiClient {
     };
     if (system.isNotEmpty) body['system'] = system.first.content;
 
-    final res = await http.post(
-      Uri.parse('${provider.baseUrl}/v1/messages'),
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': provider.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: jsonEncode(body),
-    );
+    final res = await _httpClient
+        .post(
+          _uri('/v1/messages'),
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': provider.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(requestTimeout);
     if (res.statusCode != 200) {
       throw Exception('Anthropic 错误 ${res.statusCode}: ${res.body}');
     }

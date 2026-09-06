@@ -7,8 +7,8 @@
 //!
 //! * **Read-only** tools run **concurrently** via a `tokio::task::JoinSet`, with
 //!   a hard cap on in-flight calls.
-//! * **Subagent** tools run concurrently in their own bounded phase, so several
-//!   delegated child tasks can proceed without racing normal writes.
+//! * **Read-only subagent** tools run concurrently in their own bounded phase.
+//!   Subagents that can mutate shared state are serialized with normal writes.
 //! * **Mutating** tools run **serially**, *after* reads/subagents, in the order
 //!   they were requested — so writes never race each other or read stale state.
 //!
@@ -58,8 +58,8 @@ impl ToolScheduler {
             return results;
         }
 
-        // Partition into reads/subagents (bounded concurrent) and writes
-        // (serial) preserving write order.
+        // Partition into reads/read-only subagents (bounded concurrent) and
+        // mutating work (serial), preserving write order.
         // A call to an unknown tool is treated as a write (serialized) so its
         // NotFound result is produced deterministically; mutating defaults safe.
         let mut reads: Vec<&ToolCallRequest> = Vec::new();
@@ -86,7 +86,7 @@ impl ToolScheduler {
             .await;
         }
 
-        // ---- Phase 2: run subagents concurrently, capped separately ----
+        // ---- Phase 2: run read-only/isolated subagents concurrently ----
         if !subagents.is_empty() {
             self.run_concurrent(
                 &subagents,
@@ -202,6 +202,7 @@ fn concurrency(call: &ToolCallRequest, registry: &ToolRegistry) -> ToolConcurren
         Some(tool) => {
             let spec = tool.spec();
             match spec.concurrency {
+                ToolConcurrency::Subagent if spec.mutating => ToolConcurrency::Mutating,
                 ToolConcurrency::Subagent => ToolConcurrency::Subagent,
                 ToolConcurrency::Mutating => ToolConcurrency::Mutating,
                 ToolConcurrency::ReadOnly if spec.mutating => ToolConcurrency::Mutating,
@@ -307,6 +308,7 @@ mod tests {
         peak: Arc<AtomicUsize>,
         order: Arc<std::sync::Mutex<Vec<String>>>,
         delay_ms: u64,
+        mutating: bool,
     }
     impl Tool for SubagentLikeTool {
         fn spec(&self) -> ToolSpec {
@@ -315,7 +317,7 @@ mod tests {
                 "subagent-like delegated work",
                 json!({ "type": "object" }),
                 vec![],
-                true,
+                self.mutating,
             )
             .with_subagent_concurrency()
         }
@@ -496,6 +498,7 @@ mod tests {
             peak: peak.clone(),
             order: order.clone(),
             delay_ms: 40,
+            mutating: false,
         }))
         .unwrap();
         reg.register(Arc::new(WriteTool {
@@ -524,6 +527,34 @@ mod tests {
             last_sub_end < write_pos,
             "serial writes should wait until subagents finish"
         );
+    }
+
+    #[tokio::test]
+    async fn mutating_subagent_class_is_serialized() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(SubagentLikeTool {
+                live,
+                peak: peak.clone(),
+                order,
+                delay_ms: 30,
+                mutating: true,
+            }))
+            .unwrap();
+        let context = ctx("mutating-subagents", CancellationToken::new());
+        let calls = vec![
+            ToolCallRequest::new("subagent_like", json!({ "tag": "a" })),
+            ToolCallRequest::new("subagent_like", json!({ "tag": "b" })),
+        ];
+
+        let results = ToolScheduler::new()
+            .run_batch(&calls, &registry, &context)
+            .await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -17,10 +17,10 @@ export interface ResultMeta {
   duration_ms: number;
 }
 
-export interface ToolResult {
+export interface ToolResult<TData = unknown> {
   ok: boolean;
   content: string;
-  data: unknown;
+  data: TData;
   summary?: string | null;
   metadata: ResultMeta;
 }

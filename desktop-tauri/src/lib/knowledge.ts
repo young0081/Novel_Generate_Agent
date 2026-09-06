@@ -6,7 +6,9 @@
 // searches. Bases can be hand-curated or auto-filled from source material.
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import { isDesktop, NotInDesktopError } from "./core";
+import { listen } from "@tauri-apps/api/event";
+import { isDesktop, newRequestId, NotInDesktopError } from "./core";
+import type { AgentStep, LiveRun } from "./studio";
 
 /** What a knowledge entry is about. */
 export type KnowledgeKind =
@@ -140,14 +142,32 @@ export async function searchKnowledge(
 
 /**
  * Auto-fill a base from a topic / source material using the active model.
- * Streams progress on the `knowledge-delta` event. Returns the number added.
+ * Streams the shared `agent-step` lifecycle and returns the authoritative run
+ * outcome together with the number of entries saved.
  */
 export async function fillFromTopic(
   kbId: string,
   topic: string,
-): Promise<{ added: number; raw: string }> {
-  return invoke<{ added: number; raw: string }>("knowledge_fill_web", {
-    kbId,
-    topic,
-  });
+  onStep?: (step: AgentStep) => void,
+  requestId?: string,
+): Promise<{ added: number; outcome: LiveRun["outcome"]; session: LiveRun["session"] }> {
+  const activeRequestId = requestId ?? newRequestId("knowledge");
+  const un = onStep
+    ? await listen<AgentStep>("agent-step", (event) => {
+        if (event.payload.request_id === activeRequestId) onStep(event.payload);
+      })
+    : null;
+  try {
+    return await invoke<{
+      added: number;
+      outcome: LiveRun["outcome"];
+      session: LiveRun["session"];
+    }>("knowledge_fill_web", {
+      kbId,
+      topic,
+      requestId: activeRequestId,
+    });
+  } finally {
+    un?.();
+  }
 }

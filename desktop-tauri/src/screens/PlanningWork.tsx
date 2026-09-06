@@ -5,6 +5,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -20,26 +21,31 @@ import {
   IconProviders,
   IconStar,
   IconSeed,
+  IconStop,
 } from "../components/icons";
-import { describeError, isDesktop } from "../lib/core";
+import { cancel, describeError, isDesktop, newRequestId } from "../lib/core";
 import { useToast } from "../components/Toast";
 import {
   runGoalLive,
   type AgentStep,
 } from "../lib/studio";
-import { getProviders } from "../lib/providers";
+import { getProviders, PROVIDERS_CHANGED_EVENT } from "../lib/providers";
 import {
   derivePhase,
   workflowView,
   isNoProviderError,
   isProviderCompatibilityError,
+  settlePendingTools,
   upsertStep,
   PLAN_STAGES,
+  reachedWorkflowStage,
+  stopReasonLabel,
   type RunStep,
 } from "../lib/agentRun";
 import WorkStatus from "../components/agent/WorkStatus";
 import WorkflowSteps from "../components/agent/WorkflowSteps";
 import AgentFeed from "../components/agent/AgentFeed";
+import { scrollLiveAnchor } from "../lib/liveScroll";
 
 interface PlanningWorkProps {
   onOpenSettings?: () => void;
@@ -65,7 +71,7 @@ const ACTIONS: PlanAction[] = [
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
       `1. **必须调用工具**：每构思出一条设定，立即使用 memory_save 工具保存，不得仅在回复中描述\n` +
-      `2. **参数必须正确**：kind="worldbuilding"（固定值，不得更改），title=设定名称，content=完整内容\n` +
+      `2. **参数必须完整**：kind="worldbuilding"（固定值），title=设定名称，summary=一句话摘要，content=完整内容\n` +
       `3. **最低数量**：至少保存 3 条设定，否则视为未完成任务\n` +
       `4. **禁止偏离**：严格围绕作者构思，不得自行添加无关元素\n\n` +
       `## 你的任务\n` +
@@ -92,7 +98,7 @@ const ACTIONS: PlanAction[] = [
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
       `1. **必须调用工具**：每设计完一个角色，立即使用 memory_save 工具保存，不得仅在回复中描述\n` +
-      `2. **参数必须正确**：kind="character"（固定值），title=角色名，content=完整角色设定\n` +
+      `2. **参数必须完整**：kind="character"（固定值），title=角色名，summary=一句话摘要，content=完整角色设定\n` +
       `3. **最低数量**：至少保存 3 个角色（主角+配角），否则视为未完成任务\n` +
       `4. **禁止偏离**：严格围绕作者构思，角色设定必须与构思契合\n\n` +
       `## 你的任务\n` +
@@ -119,7 +125,7 @@ const ACTIONS: PlanAction[] = [
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
       `1. **必须调用工具**：构思完成后，使用 memory_save 工具保存大纲，不得仅在回复中描述\n` +
-      `2. **参数必须正确**：kind="outline"（固定值），title="故事大纲"，content=完整大纲\n` +
+      `2. **参数必须完整**：kind="outline"（固定值），title="故事大纲"，summary=一句话主线，content=完整大纲\n` +
       `3. **内容完整**：必须包含核心冲突、主线脉络、分阶段情节节点、关键转折\n` +
       `4. **禁止偏离**：严格围绕作者构思，不得自行改变故事方向\n\n` +
       `## 你的任务\n` +
@@ -148,7 +154,7 @@ const ACTIONS: PlanAction[] = [
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
       `1. **必须调用工具**：每设计完一处伏笔，立即使用 memory_save 工具保存，不得仅在回复中描述\n` +
-      `2. **参数必须正确**：kind="foreshadow"（固定值），title=伏笔概括，content=埋设+回收设计\n` +
+      `2. **参数必须完整**：kind="foreshadow"（固定值），title=伏笔概括，summary=一句话作用，content=埋设+回收设计\n` +
       `3. **最低数量**：至少保存 2 处伏笔，否则视为未完成任务\n` +
       `4. **禁止偏离**：伏笔必须服务于作者构思的故事，不得无关\n\n` +
       `## 你的任务\n` +
@@ -177,6 +183,7 @@ interface ActionRun {
   providerCompat: boolean;
   finalAnswer: string | null;
   savedCount: number;
+  cancelled: boolean;
 }
 
 interface ActiveModel {
@@ -189,34 +196,65 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
   const [concept, setConcept] = useState("");
   const [activeModel, setActiveModel] = useState<ActiveModel | null>(null);
   const [runs, setRuns] = useState<Map<string, ActionRun>>(new Map());
+  const [cancellingKey, setCancellingKey] = useState<string | null>(null);
+  const activeRequestRef = useRef<{ id: string; key: string } | null>(null);
+  const cancelledRequestsRef = useRef(new Set<string>());
+  const lastRunKeyRef = useRef<string | null>(null);
+  const runTailRef = useRef<HTMLDivElement>(null);
+  const anyRunning = Array.from(runs.values()).some((run) => run.running);
 
-  // Check provider on mount
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      scrollLiveAnchor(runTailRef.current, { live: anyRunning });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [anyRunning, runs]);
+
+  useEffect(() => {
+    return () => {
+      if (activeRequestRef.current) void cancel(activeRequestRef.current.id);
+    };
+  }, []);
+
+  // Keep provider readiness in sync with the in-window settings sheet.
   useEffect(() => {
     if (!isDesktop()) return;
-    (async () => {
+    let alive = true;
+    const load = async () => {
       try {
         const s = await getProviders();
         const prov = s.providers.find((p) => p.id === s.active_provider);
+        if (!alive) return;
         if (prov && s.active_model) {
           setActiveModel({ provider: prov.name || "（未命名）", model: s.active_model });
         } else {
           setActiveModel(null);
         }
       } catch {
-        /* silent */
+        if (alive) setActiveModel(null);
       }
-    })();
+    };
+    void load();
+    const handleProvidersChanged = () => { void load(); };
+    window.addEventListener(PROVIDERS_CHANGED_EVENT, handleProvidersChanged);
+    return () => {
+      alive = false;
+      window.removeEventListener(PROVIDERS_CHANGED_EVENT, handleProvidersChanged);
+    };
   }, []);
 
   const startAction = useCallback(
     async (action: PlanAction) => {
+      if (activeRequestRef.current) return;
       const c = concept.trim();
       if (!c) {
         toast.err("请先填写「构思」再生成设定");
         return;
       }
       const stepSeq = { current: 0 };
-      const handleStep = (s: AgentStep) => {
+      let pendingDelta: Extract<AgentStep, { phase: "delta" }> | null = null;
+      let deltaFrame: number | null = null;
+      const applyStep = (s: AgentStep) => {
         setRuns((prev) => {
           const cur = prev.get(action.key);
           if (!cur) return prev;
@@ -234,14 +272,41 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
             const next = new Map(prev);
             next.set(action.key, {
               ...cur,
+              steps: settlePendingTools(
+                cur.steps,
+                s.reason === "cancelled" ? "cancelled" : s.success ? "success" : "error",
+              ),
               running: false,
               success: s.success,
+              cancelled: s.reason === "cancelled",
               finishNote: s.success
                 ? `生成完成（共 ${s.steps} 步）`
-                : `已停止：${s.reason || "未完成"}（共 ${s.steps} 步）`,
+                : `${stopReasonLabel(s.reason)}（共 ${s.steps} 步）`,
             });
             return next;
           });
+        }
+      };
+      const flushStepFrame = () => {
+        if (deltaFrame !== null) {
+          window.cancelAnimationFrame(deltaFrame);
+          deltaFrame = null;
+        }
+        const pending = pendingDelta;
+        pendingDelta = null;
+        if (pending) applyStep(pending);
+      };
+      const handleStep = (s: AgentStep) => {
+        if (s.phase !== "delta") {
+          flushStepFrame();
+          applyStep(s);
+          return;
+        }
+        pendingDelta = pendingDelta?.step === s.step
+          ? { ...s, delta: pendingDelta.delta + s.delta }
+          : s;
+        if (deltaFrame === null) {
+          deltaFrame = window.requestAnimationFrame(flushStepFrame);
         }
       };
 
@@ -258,17 +323,68 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
           providerCompat: false,
           finalAnswer: null,
           savedCount: 0,
+          cancelled: false,
         });
         return next;
       });
 
+      const requestId = newRequestId("planning");
+      lastRunKeyRef.current = action.key;
+      activeRequestRef.current = { id: requestId, key: action.key };
       try {
-        const result = await runGoalLive(action.goal(c), action.title, handleStep);
-        // Check if any memory_save was actually called
-        const toolCalls = result.session.messages.filter(
-          (m) => m.tool_call && m.tool_call.name === "memory_save"
+        const result = await runGoalLive(
+          action.goal(c),
+          action.title,
+          handleStep,
+          undefined,
+          "planning",
+          requestId,
         );
-        const savedCount = toolCalls.length;
+        flushStepFrame();
+        if (cancelledRequestsRef.current.delete(requestId)) {
+          setRuns((prev) => {
+            const cur = prev.get(action.key);
+            if (!cur) return prev;
+            const next = new Map(prev);
+            next.set(action.key, {
+              ...cur,
+              steps: settlePendingTools(cur.steps, "cancelled"),
+              running: false,
+              success: false,
+              finishNote: "已由用户停止",
+              cancelled: true,
+            });
+            return next;
+          });
+          return;
+        }
+        if (result.outcome.stopped_reason !== "goal_reached") {
+          const stoppedReason = result.outcome.stopped_reason;
+          setRuns((prev) => {
+            const cur = prev.get(action.key);
+            if (!cur) return prev;
+            const next = new Map(prev);
+            next.set(action.key, {
+              ...cur,
+              steps: settlePendingTools(
+                cur.steps,
+                stoppedReason === "cancelled" ? "cancelled" : "error",
+              ),
+              running: false,
+              success: false,
+              cancelled: stoppedReason === "cancelled",
+              finishNote: stopReasonLabel(stoppedReason),
+            });
+            return next;
+          });
+          return;
+        }
+        if (result.outcome.warning) toast.info(result.outcome.warning);
+        // Count successful saves, not merely attempted calls.
+        const savedCount = result.session.messages.filter(
+          (message) =>
+            message.tool_result?.name === "memory_save" && message.tool_result.ok,
+        ).length;
 
         setRuns((prev) => {
           const cur = prev.get(action.key);
@@ -276,6 +392,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
           const next = new Map(prev);
           next.set(action.key, {
             ...cur,
+            steps: settlePendingTools(cur.steps, savedCount > 0 ? "success" : "error"),
             running: false,
             success: savedCount > 0,
             savedCount,
@@ -293,32 +410,59 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
           toast.ok(`${action.label}生成完成（已保存 ${savedCount} 条）`);
         }
       } catch (e) {
-        const msg = describeError(e);
-        console.error(`[PlanningWork] ${action.key} failed:`, e);
+        flushStepFrame();
+        const stopped = cancelledRequestsRef.current.delete(requestId);
+        const msg = stopped ? "已由用户停止" : describeError(e);
+        if (!stopped) console.error(`[PlanningWork] ${action.key} failed:`, e);
         setRuns((prev) => {
           const cur = prev.get(action.key);
           if (!cur) return prev;
           const next = new Map(prev);
           next.set(action.key, {
             ...cur,
+            steps: settlePendingTools(cur.steps, stopped ? "cancelled" : "error", msg),
             running: false,
-            error: msg,
-            noProvider: isNoProviderError(msg),
-            providerCompat: isProviderCompatibilityError(msg),
+            finishNote: stopped ? "已由用户停止" : cur.finishNote,
+            cancelled: stopped,
+            error: stopped ? null : msg,
+            noProvider: !stopped && isNoProviderError(msg),
+            providerCompat: !stopped && isProviderCompatibilityError(msg),
             savedCount: 0,
             finalAnswer: null,
           });
           return next;
         });
-        if (isNoProviderError(msg) || isProviderCompatibilityError(msg)) {
+        if (stopped || isNoProviderError(msg) || isProviderCompatibilityError(msg)) {
           /* handled in UI */
         } else {
           toast.err(`${action.label}生成失败：${msg}`);
         }
+      } finally {
+        if (deltaFrame !== null) window.cancelAnimationFrame(deltaFrame);
+        deltaFrame = null;
+        pendingDelta = null;
+        if (activeRequestRef.current?.id === requestId) {
+          activeRequestRef.current = null;
+        }
+        setCancellingKey((key) => (key === action.key ? null : key));
       }
     },
     [concept, toast],
   );
+
+  const stopAction = useCallback(async (key: string) => {
+    const active = activeRequestRef.current;
+    if (!active || active.key !== key || cancellingKey === key) return;
+    cancelledRequestsRef.current.add(active.id);
+    setCancellingKey(key);
+    try {
+      await cancel(active.id);
+    } catch (error) {
+      cancelledRequestsRef.current.delete(active.id);
+      setCancellingKey(null);
+      toast.err(`停止失败：${describeError(error)}`);
+    }
+  }, [cancellingKey, toast]);
 
   return (
     <div className="work-content planning2">
@@ -392,14 +536,18 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                     </div>
                   </div>
                   <button
-                    className="btn btn--primary btn--sm"
-                    onClick={() => void startAction(a)}
-                    disabled={run?.running || !concept.trim() || !activeModel}
+                    className={`btn ${run?.running ? "btn--danger" : "btn--primary"} btn--sm`}
+                    onClick={() => run?.running ? void stopAction(a.key) : void startAction(a)}
+                    disabled={
+                      run?.running
+                        ? cancellingKey === a.key
+                        : anyRunning || !concept.trim() || !activeModel
+                    }
                   >
                     {run?.running ? (
                       <>
-                        <Spinner size={14} />
-                        生成中…
+                        {cancellingKey === a.key ? <Spinner size={14} /> : <IconStop size={14} />}
+                        {cancellingKey === a.key ? "停止中…" : "停止"}
                       </>
                     ) : (
                       <>
@@ -415,7 +563,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
         </section>
 
         {Array.from(runs.values())
-          .filter((r) => r.running || r.steps.length > 0 || r.error)
+          .filter((r) => r.running || r.steps.length > 0 || r.error || r.finishNote)
           .map((r) => {
             const phase = derivePhase({
               running: r.running,
@@ -423,8 +571,10 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
               finished: r.finishNote !== null,
               success: r.success,
               errored: r.error !== null,
+              cancelling: cancellingKey === r.action.key,
+              cancelled: r.cancelled,
             });
-            const wf = workflowView(phase);
+            const wf = workflowView(phase, reachedWorkflowStage(r.steps));
             const lastStepNo = r.steps.length > 0 ? r.steps[r.steps.length - 1].step : 0;
             const toolCount = r.steps.reduce((n, s) => n + s.toolCalls.length, 0);
             return (
@@ -447,7 +597,15 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                         <WorkStatus phase={phase} step={lastStepNo} toolCount={toolCount} />
                       </div>
                     )}
-                    {r.steps.length > 0 && <AgentFeed steps={r.steps} running={r.running} pendingText="AI 正在构思下一条…" />}
+                    {(r.running || r.steps.length > 0) && (
+                      <AgentFeed
+                        steps={r.steps}
+                        running={r.running}
+                        phase={phase}
+                        pendingText="AI 正在构思下一条…"
+                        tailRef={lastRunKeyRef.current === r.action.key ? runTailRef : undefined}
+                      />
+                    )}
                     {!r.running && r.finalAnswer && (
                       <div className="planning2__final-answer">
                         <p className="planning2__final-label">AI 最终回复：</p>
@@ -457,8 +615,8 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                     {!r.running && r.error && <div className="studio2__notice-err"><IconWarn size={14} /> {r.error}</div>}
                     {r.finishNote && (
                       <div className={`planning2__finish ${r.success ? "" : "planning2__finish--warn"}`}>
-                        <IconCheck size={14} /> {r.finishNote}
-                        {r.savedCount === 0 && r.success === false && (
+                        {r.success ? <IconCheck size={14} /> : <IconWarn size={14} />} {r.finishNote}
+                        {r.savedCount === 0 && r.success === false && !r.cancelled && (
                           <p className="planning2__finish-hint">
                             提示：AI 完成了思考，但没有调用 memory_save 工具保存内容。
                             这可能是因为：① 模型不支持工具调用 ② 回复被截断 ③ 理解偏差。

@@ -113,7 +113,10 @@ pub fn parse_react(text: &str) -> Result<ReActStep> {
     // Long text (章节内容) should NOT auto-terminate; the model must use tools.
     let fallback = cleaned.trim().to_string();
     if !fallback.is_empty() && fallback.len() < 500 {
-        return Ok(ReActStep::Final { thought, answer: fallback });
+        return Ok(ReActStep::Final {
+            thought,
+            answer: fallback,
+        });
     }
 
     Err(CoreError::protocol(format!(

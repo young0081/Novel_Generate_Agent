@@ -102,9 +102,9 @@ function CarveSeal({
 function ScrollBand({ step }: { step: Step }) {
   const cur = ORDER.indexOf(step);
   return (
-    <aside className="band" aria-label="安装进程">
+    <aside className="band" data-step={step} aria-label="安装进程">
       <div className="band-wordmark">
-        <span className="wm-seal">墨</span>
+        <img className="wm-icon" src="/icon.png" alt="" aria-hidden="true" />
         <span className="wm-rest">創作</span>
       </div>
       <ol className="rites">
@@ -112,7 +112,11 @@ function ScrollBand({ step }: { step: Step }) {
           const state =
             i === cur ? "active" : i < cur ? "done" : "todo";
           return (
-            <li key={rt.key} className={`rite rite--${state}`}>
+            <li
+              key={rt.key}
+              className={`rite rite--${state}`}
+              aria-current={state === "active" ? "step" : undefined}
+            >
               <span className="rite-mark" aria-hidden="true">
                 {i < cur ? "·" : i + 1}
               </span>
@@ -168,7 +172,7 @@ export default function App() {
         setDir(d.path);
       } catch {
         if (!alive) return;
-        setVersion((p) => p || "0.3.0");
+        setVersion((p) => p || "0.3.2");
         setDetect({ installed: false, path: "", version: null });
       }
     })();
@@ -202,8 +206,17 @@ export default function App() {
   }, [dir]);
 
   const onLaunch = useCallback(async () => {
-    try { await runLaunch(dir); } catch { /* ignore */ }
-    finally { await closeWindow(); }
+    setError(null);
+    try {
+      await runLaunch(dir);
+      await closeWindow();
+    } catch (err) {
+      setError(
+        typeof err === "string" ? err
+          : err instanceof Error ? err.message
+          : "应用启动失败，请从安装目录手动启动。",
+      );
+    }
   }, [dir]);
 
   return (
@@ -246,6 +259,12 @@ export default function App() {
             isUpdate={isUpdate}
             version={version}
             shortcutWarning={report && report.shortcuts === 0 ? dir : null}
+            launchError={error}
+            uninstallerWarning={
+              report?.uninstaller === false
+                ? report.uninstaller_error || "新版卸载程序写入或注册失败。"
+                : null
+            }
             onLaunch={() => void onLaunch()}
             onClose={() => void closeWindow()}
           />
@@ -318,7 +337,7 @@ function PathStep({
             spellCheck={false}
             value={dir}
             onChange={(e) => setDir(e.currentTarget.value)}
-            placeholder="C:\Users\…\Programs\NovelGenerateTeam"
+            placeholder="C:\Users\…\Programs\NovelGenerateAgent"
             readOnly={isUpdate}
           />
         </span>
@@ -392,18 +411,43 @@ function Installing({
     );
   }
   return (
-    <section className="panel panel--install">
+    <section className="panel panel--install" aria-busy="true">
       <div className="carve-wrap">
         <CarveSeal reveal={percent / 100} char="創" size={138} />
       </div>
       <div className="install-side">
         <p className="kicker">第三事 · 镌刻</p>
+        <div className="install-phase" role="status" aria-live="polite">
+          <span className="install-phase__dot" aria-hidden="true" />
+          正在执行安装
+        </div>
         <div className="pct">
           <span className="pct-num">{Math.round(shown)}</span>
           <span className="pct-sign">%</span>
         </div>
         <p className="install-msg" aria-live="polite" key={message}>{message}</p>
         <p className="install-sub">正为你于宣纸上镌一方印，请稍候。</p>
+        <div
+          className="install-progress"
+          role="progressbar"
+          aria-label="安装进度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(shown)}
+        >
+          <div className="install-progress__head">
+            <span>安装进度</span>
+            <span>{Math.round(shown)}%</span>
+          </div>
+          <div className="install-progress__track" aria-hidden="true">
+            <span className="install-progress__fill" style={{ width: `${shown}%` }} />
+          </div>
+          <div className="install-progress__ticks" aria-hidden="true">
+            <span>准备</span>
+            <span>写入</span>
+            <span>收尾</span>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -411,9 +455,10 @@ function Installing({
 
 /* ---- Step 钤印 / Done ---------------------------------------------------- */
 function Done({
-  isUpdate, version, shortcutWarning, onLaunch, onClose,
+  isUpdate, version, shortcutWarning, launchError, uninstallerWarning, onLaunch, onClose,
 }: {
   isUpdate: boolean; version: string; shortcutWarning: string | null;
+  launchError: string | null; uninstallerWarning: string | null;
   onLaunch: () => void; onClose: () => void;
 }) {
   const [stamped, setStamped] = useState(reduced());
@@ -434,9 +479,15 @@ function Done({
         {shortcutWarning && (
           <p className="warnline reveal r3">
             未能创建快捷方式，可直接从安装目录启动：<br />
-            <code>{shortcutWarning}\NovelGenerateTeam.exe</code>
+            <code>{shortcutWarning}\NovelGenerateAgent.exe</code>
           </p>
         )}
+        {uninstallerWarning && (
+          <p className="warnline reveal r3" title={uninstallerWarning}>
+            新版卸载程序写入或注册失败，请关闭占用文件后重新运行安装器。
+          </p>
+        )}
+        {launchError && <p className="errline reveal r3">{launchError}</p>}
         <div className="row row--split reveal r4">
           <button className="ink-btn ink-btn--ghost" onClick={onClose}>完成</button>
           <button className="ink-btn ink-btn--solid" onClick={onLaunch}>

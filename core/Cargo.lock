@@ -468,8 +468,10 @@ version = "0.1.0"
 dependencies = [
  "na-common",
  "na-memory",
+ "na-sandbox",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -477,9 +479,11 @@ name = "na-memory"
 version = "0.1.0"
 dependencies = [
  "na-common",
+ "na-sandbox",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -496,6 +500,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -517,6 +522,7 @@ dependencies = [
  "na-memory",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -527,8 +533,10 @@ dependencies = [
  "na-memory",
  "na-sandbox",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

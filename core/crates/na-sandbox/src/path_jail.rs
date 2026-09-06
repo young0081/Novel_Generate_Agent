@@ -3,17 +3,18 @@
 //! The agent's tools (read/write/edit/list files) must never be able to touch
 //! anything outside the workspace the user opened. [`PathJail`] is the single
 //! choke point that enforces this: every requested path is joined to the root
-//! and **lexically normalized** (`.` and `..` resolved purely by string math,
-//! without touching the disk), then checked for escapes. Any attempt to climb
+//! and first **lexically normalized** (`.` and `..` resolved by string math),
+//! then every existing component is canonicalized before use. Any attempt to climb
 //! above the root — via `..`, an absolute path, a Windows drive prefix, or a
-//! UNC/`\\?\` prefix — is rejected with a [`CoreError::sandbox`].
+//! UNC/`\\?\` prefix — or to traverse a symlink/junction outside the root — is
+//! rejected with a [`CoreError::sandbox`].
 //!
-//! Normalization is intentionally lexical (not [`std::fs::canonicalize`]) for
-//! two reasons:
+//! The initial normalization is lexical for two reasons:
 //!   1. The target file may not exist yet (a write that creates it), and
 //!      `canonicalize` requires existence.
-//!   2. We must not be fooled — or blocked — by symlinks at resolve time; the
-//!      decision should depend only on the textual path the model asked for.
+//!   2. It gives a deterministic early rejection for textual traversal. The
+//!      nearest existing path is then canonicalized so filesystem links cannot
+//!      bypass that lexical boundary.
 //!
 //! The root itself *is* canonicalized once (and created if missing) so that
 //! [`contains`](PathJail::contains) / [`relative`](PathJail::relative) work
@@ -98,7 +99,7 @@ impl PathJail {
                     "absolute path is outside sandbox root: {requested}"
                 )));
             }
-            abs
+            canonicalize_nearest_existing(&abs, requested)?
         } else {
             // Relative: fold the request's components onto the root, refusing
             // to climb above it.
@@ -107,14 +108,19 @@ impl PathJail {
             })?
         };
 
-        // Final defensive check: the normalized result must be within root.
-        if !path_within(&self.root, &normalized) {
+        // Resolve symlinks/junctions in every existing component. This also
+        // handles new files: once the first missing component is reached, the
+        // already-validated real parent is joined with the remaining suffix.
+        let resolved = resolve_existing_components(&self.root, &normalized, requested)?;
+
+        // Final defensive check: the real result must be within root.
+        if !path_within(&self.root, &resolved) {
             return Err(CoreError::sandbox(format!(
                 "resolved path escapes sandbox root: {requested}"
             )));
         }
 
-        Ok(normalized)
+        Ok(resolved)
     }
 
     /// Whether `p` (treated lexically) is the root or a descendant of it.
@@ -270,11 +276,145 @@ fn fold_relative(base: &Path, requested: &Path) -> Option<PathBuf> {
 
 /// Is `candidate` equal to `root` or a descendant of it (lexical prefix on
 /// component boundaries)?
+#[cfg(windows)]
 fn path_within(root: &Path, candidate: &Path) -> bool {
+    let root = windows_comparison_path(root);
+    let candidate = windows_comparison_path(candidate);
     if candidate == root {
         return true;
     }
-    candidate.starts_with(root)
+    candidate
+        .strip_prefix(&root)
+        .is_some_and(|suffix| suffix.starts_with('\\'))
+}
+
+#[cfg(not(windows))]
+fn path_within(root: &Path, candidate: &Path) -> bool {
+    candidate == root || candidate.starts_with(root)
+}
+
+#[cfg(windows)]
+fn windows_comparison_path(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('/', "\\");
+    let without_verbatim = if let Some(rest) = raw.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix("\\\\?\\") {
+        rest.to_string()
+    } else {
+        raw
+    };
+    without_verbatim.trim_end_matches('\\').to_lowercase()
+}
+
+/// Canonicalize the nearest existing ancestor of an absolute path and append
+/// its missing suffix. The caller has already established lexical containment,
+/// so this is safe from probing arbitrary outside paths and normalizes Windows
+/// verbatim (`\\?\`) versus drive-letter representations.
+fn canonicalize_nearest_existing(candidate: &Path, requested: &str) -> Result<PathBuf> {
+    let mut ancestor = candidate.to_path_buf();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(&ancestor) {
+            Ok(metadata) => {
+                let mut canonical = std::fs::canonicalize(&ancestor).map_err(|error| {
+                    if metadata.file_type().is_symlink() {
+                        CoreError::sandbox(format!(
+                            "unresolvable filesystem link in sandbox path {requested:?}: {error}"
+                        ))
+                    } else {
+                        CoreError::from(error).with_context(format!(
+                            "canonicalizing sandbox path component {}",
+                            ancestor.display()
+                        ))
+                    }
+                })?;
+                for part in missing.iter().rev() {
+                    canonical.push(part);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = ancestor.file_name() else {
+                    return Err(CoreError::sandbox(format!(
+                        "absolute path has no existing anchor: {requested}"
+                    )));
+                };
+                missing.push(name.to_os_string());
+                if !ancestor.pop() {
+                    return Err(CoreError::sandbox(format!(
+                        "absolute path has no existing anchor: {requested}"
+                    )));
+                }
+            }
+            Err(error) => {
+                return Err(CoreError::from(error).with_context(format!(
+                    "inspecting sandbox path component {}",
+                    ancestor.display()
+                )))
+            }
+        }
+    }
+}
+
+/// Canonicalize each component that already exists, stopping at the first
+/// missing component so paths for newly-created files remain supported.
+fn resolve_existing_components(root: &Path, candidate: &Path, requested: &str) -> Result<PathBuf> {
+    let relative = candidate.strip_prefix(root).map_err(|_| {
+        CoreError::sandbox(format!("resolved path escapes sandbox root: {requested}"))
+    })?;
+    let components: Vec<_> = relative.components().collect();
+    let mut current = root.to_path_buf();
+
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            return Err(CoreError::sandbox(format!(
+                "unexpected path component in sandbox path: {requested}"
+            )));
+        };
+        current.push(name);
+
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                let canonical = std::fs::canonicalize(&current).map_err(|error| {
+                    if metadata.file_type().is_symlink() {
+                        CoreError::sandbox(format!(
+                            "unresolvable filesystem link in sandbox path {requested:?}: {error}"
+                        ))
+                    } else {
+                        CoreError::from(error).with_context(format!(
+                            "canonicalizing sandbox path component {}",
+                            current.display()
+                        ))
+                    }
+                })?;
+                if !path_within(root, &canonical) {
+                    return Err(CoreError::sandbox(format!(
+                        "filesystem link escapes sandbox root: {requested}"
+                    )));
+                }
+                current = canonical;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                for remaining in &components[index + 1..] {
+                    let Component::Normal(name) = remaining else {
+                        return Err(CoreError::sandbox(format!(
+                            "unexpected path component in sandbox path: {requested}"
+                        )));
+                    };
+                    current.push(name);
+                }
+                break;
+            }
+            Err(error) => {
+                return Err(CoreError::from(error).with_context(format!(
+                    "inspecting sandbox path component {}",
+                    current.display()
+                )))
+            }
+        }
+    }
+
+    Ok(current)
 }
 
 #[cfg(test)]
@@ -460,5 +600,57 @@ mod tests {
         let res = PathJail::new(&f);
         assert!(res.is_err());
         let _ = std::fs::remove_file(&f);
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[test]
+    fn rejects_directory_symlink_that_escapes_root() {
+        let jail = temp_jail();
+        let outside = jail
+            .root()
+            .with_extension(format!("outside-{}", na_common::next_id("t")));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "outside").unwrap();
+        let link = jail.root().join("escape-link");
+        if let Err(error) = symlink_dir(&outside, &link) {
+            // Windows may require Developer Mode or SeCreateSymbolicLinkPrivilege.
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                let _ = std::fs::remove_dir_all(&outside);
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        let error = jail.resolve("escape-link/secret.txt").unwrap_err();
+        assert!(error.is(na_common::ErrorKind::SandboxViolation), "{error}");
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn allows_directory_symlink_whose_target_stays_inside_root() {
+        let jail = temp_jail();
+        let target = jail.root().join("real-dir");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = jail.root().join("inside-link");
+        if let Err(error) = symlink_dir(&target, &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("creating test symlink failed: {error}");
+        }
+
+        let resolved = jail.resolve("inside-link/new.txt").unwrap();
+        assert_eq!(resolved, target.join("new.txt"));
+        let _ = std::fs::remove_file(&link);
     }
 }

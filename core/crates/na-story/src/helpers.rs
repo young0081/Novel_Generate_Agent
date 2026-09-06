@@ -1,12 +1,14 @@
 //! Helper functions for updating story state during creation workflow.
 
-use crate::state::*;
 use crate::manager::StoryStateManager;
+use crate::state::*;
 
 impl StoryStateManager {
     /// Add a character to the story state.
     pub fn add_character(&mut self, character: CharacterState) {
-        self.state.characters.insert(character.id.clone(), character);
+        self.state
+            .characters
+            .insert(character.id.clone(), character);
     }
 
     /// Update character status.
@@ -37,7 +39,12 @@ impl StoryStateManager {
 
     /// Update foreshadow status.
     pub fn update_foreshadow_status(&mut self, foreshadow_id: &str, new_status: ForeshadowStatus) {
-        if let Some(fh) = self.state.foreshadows.iter_mut().find(|f| f.id == foreshadow_id) {
+        if let Some(fh) = self
+            .state
+            .foreshadows
+            .iter_mut()
+            .find(|f| f.id == foreshadow_id)
+        {
             fh.status = new_status;
         }
     }
@@ -79,7 +86,11 @@ mod tests {
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
         let mut p = env::temp_dir();
-        p.push(format!("na_story_helpers_test_{}_{}", tag, na_common::next_id("t")));
+        p.push(format!(
+            "na_story_helpers_test_{}_{}",
+            tag,
+            na_common::next_id("t")
+        ));
         p
     }
 

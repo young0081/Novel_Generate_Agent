@@ -25,6 +25,33 @@ export interface ToolResult<T = unknown> {
   metadata: ToolMetadata;
 }
 
+/**
+ * Convert a structured tool failure into a regular exception.
+ *
+ * The bridge deliberately resolves tool-level failures as `{ ok: false }`.
+ * Mutation callers must opt in to this guard before updating optimistic UI.
+ */
+export function requireToolSuccess<T>(
+  result: ToolResult<T>,
+  fallback = "工具执行失败",
+): ToolResult<T> {
+  if (!result.ok) {
+    throw new Error(result.content.trim() || result.summary?.trim() || fallback);
+  }
+  return result;
+}
+
+/** Unique id used to isolate concurrent Tauri event streams. */
+export function newRequestId(prefix = "request"): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+    return `${prefix}-${cryptoApi.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
 /** Description of a tool exposed by the Rust core. */
 export interface ToolSpec {
   name: string;
@@ -96,14 +123,36 @@ export async function invokeTool<T = unknown>(
   return invoke<ToolResult<T>>("invoke_tool", { name, args });
 }
 
+/** Conditionally create/overwrite a workspace text file in one backend lease. */
+export async function createWorkspaceFile(
+  path: string,
+  content: string,
+  overwrite = false,
+): Promise<void> {
+  return invoke<void>("workspace_create_file", { path, content, overwrite });
+}
+
+/** Rename a workspace file without exposing a read/write/delete race window. */
+export async function renameWorkspaceFile(
+  oldPath: string,
+  newPath: string,
+  overwrite = false,
+): Promise<void> {
+  return invoke<void>("workspace_rename_file", { oldPath, newPath, overwrite });
+}
+
+export function isWorkspaceTargetExistsError(error: unknown): boolean {
+  return describeError(error).includes("WORKSPACE_TARGET_EXISTS");
+}
+
 /** Run a scripted goal (offline for now). */
 export async function runGoal(args: RunGoalArgs): Promise<GoalRun> {
   return invoke<GoalRun>("run_goal", args as unknown as Record<string, unknown>);
 }
 
-/** Request cancellation of the current run. */
-export async function cancel(): Promise<void> {
-  return invoke<void>("cancel");
+/** Cancel one streamed request; omit the id only for legacy cancel-all callers. */
+export async function cancel(requestId?: string): Promise<void> {
+  return invoke<void>("cancel", { requestId });
 }
 
 /**

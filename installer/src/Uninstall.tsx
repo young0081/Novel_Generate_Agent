@@ -69,7 +69,7 @@ export default function UninstallApp() {
       <main className="stage">
         {step === "confirm" && (
           <section className="panel panel--welcome">
-            <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+            <div className="uninstall-seal">
               <CarveSeal char="别" size={80} />
             </div>
             <h1 className="lede reveal r2">确认卸载？</h1>
@@ -77,54 +77,32 @@ export default function UninstallApp() {
               将删除「墨·创作」的所有程序文件和快捷方式。
             </p>
 
-            <div className="reveal r3" style={{ marginTop: "1.5rem" }}>
+            <div className="data-choice-wrap reveal r3">
               <button
+                type="button"
+                className={`data-choice${deleteUserData ? " is-selected" : ""}`}
                 onClick={() => setDeleteUserData(!deleteUserData)}
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: "0.75rem",
-                  width: "100%",
-                  padding: "1rem",
-                  border: `1.5px solid ${deleteUserData ? 'var(--cn)' : 'var(--paper-edge)'}`,
-                  borderRadius: "8px",
-                  background: deleteUserData ? 'var(--on-cn)' : 'transparent',
-                  cursor: "pointer",
-                  transition: "all 0.2s var(--e-out)",
-                  fontFamily: "var(--sans)",
-                  fontSize: "0.95rem",
-                  textAlign: "left",
-                }}
+                aria-pressed={deleteUserData}
               >
-                <div style={{
-                  width: "20px",
-                  height: "20px",
-                  border: `2px solid ${deleteUserData ? 'var(--cn)' : 'var(--ink-3)'}`,
-                  borderRadius: "4px",
-                  background: deleteUserData ? 'var(--cn)' : 'transparent',
-                  display: "grid",
-                  placeItems: "center",
-                  flexShrink: 0,
-                  transition: "all 0.2s var(--e-out)",
-                }}>
+                <span className="data-choice__check" aria-hidden="true">
                   {deleteUserData && (
                     <svg width="12" height="10" viewBox="0 0 12 10" fill="none">
                       <path d="M1 5L4.5 8.5L11 1.5" stroke="var(--on-cn)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   )}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, color: "var(--ink)", marginBottom: "0.25rem" }}>
+                </span>
+                <span className="data-choice__body">
+                  <span className="data-choice__title">
                     同时删除用户数据
-                  </div>
-                  <div style={{ fontSize: "0.85rem", color: "var(--ink-3)", lineHeight: 1.5 }}>
+                  </span>
+                  <span className="data-choice__copy">
                     包括所有作品、会话记录、知识库内容和记忆
-                  </div>
-                </div>
+                  </span>
+                </span>
               </button>
             </div>
 
-            {error && <p className="errline">{error}</p>}
+            {error && <p className="errline reveal r3">{error}</p>}
             <div className="row row--split reveal r4">
               <button className="ink-btn ink-btn--ghost" onClick={() => void closeWindow()}>
                 取消
@@ -137,29 +115,43 @@ export default function UninstallApp() {
         )}
 
         {step === "uninstalling" && (
-          <section className="panel panel--install">
-            <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+          <section className="panel panel--install panel--uninstalling" aria-busy="true">
+            <div className="uninstall-seal">
               <CarveSeal char="拆" size={100} />
             </div>
-            <h2 className="title">正在卸载…</h2>
-            <p className="install-msg">请稍候，正在移除程序文件</p>
+            <div className="install-side">
+              <p className="kicker">正在收卷 · 卸载</p>
+              <h2 className="title">正在卸载…</h2>
+              <div className="install-phase" role="status" aria-live="polite">
+                <span className="install-phase__dot" aria-hidden="true" />
+                请稍候，正在移除程序文件
+              </div>
+              <div className="install-progress install-progress--indeterminate" aria-hidden="true">
+                <div className="install-progress__track">
+                  <span className="install-progress__fill" />
+                </div>
+              </div>
+            </div>
           </section>
         )}
 
         {step === "done" && (
-          <section className="panel panel--done">
-            <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+          <section className="panel panel--done panel--uninstall-done">
+            <div className="uninstall-seal">
               <CarveSeal char="別" size={100} />
             </div>
-            <h2 className="title reveal r2">卸载完成</h2>
-            <p className="dek reveal r3" style={{ whiteSpace: "pre-line" }}>{message}</p>
-            <p className="dek reveal r3" style={{ marginTop: "1rem", fontSize: "0.9rem" }}>
+            <div className="install-side">
+              <p className="kicker reveal r1">卷已收 · 卸载</p>
+              <h2 className="title reveal r2">卸载完成</h2>
+              <p className="dek uninstall-message reveal r3">{message}</p>
+              <p className="dek uninstall-next reveal r3">
               如需重新安装，请运行安装程序。
-            </p>
-            <div className="row reveal r4">
-              <button className="ink-btn ink-btn--solid" onClick={() => void closeWindow()}>
-                关闭
-              </button>
+              </p>
+              <div className="row reveal r4">
+                <button className="ink-btn ink-btn--solid" onClick={() => void closeWindow()}>
+                  关闭
+                </button>
+              </div>
             </div>
           </section>
         )}
@@ -167,7 +159,7 @@ export default function UninstallApp() {
 
       <aside className="band" aria-label="卸载进程">
         <div className="band-wordmark">
-          <span className="wm-seal">墨</span>
+          <img className="wm-icon" src="/icon.png" alt="" aria-hidden="true" />
           <span className="wm-rest">創作</span>
         </div>
         <div className="band-foot">卸载</div>

@@ -42,8 +42,9 @@ void main() {
     expect(find.text('hello-output'), findsOneWidget);
   });
 
-  testWidgets('BusyLabel shows a spinner while busy and the label otherwise',
-      (tester) async {
+  testWidgets('BusyLabel shows a spinner while busy and the label otherwise', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const MaterialApp(
         home: Scaffold(body: BusyLabel(busy: true, label: '保存')),
@@ -79,16 +80,14 @@ void main() {
     expect(find.byIcon(Icons.search_off_rounded), findsOneWidget);
   });
 
-  testWidgets('ErrorState shows a retry button that fires its callback',
-      (tester) async {
+  testWidgets('ErrorState shows a retry button that fires its callback', (
+    tester,
+  ) async {
     var retried = false;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ErrorState(
-            message: '出错了',
-            onRetry: () async => retried = true,
-          ),
+          body: ErrorState(message: '出错了', onRetry: () async => retried = true),
         ),
       ),
     );

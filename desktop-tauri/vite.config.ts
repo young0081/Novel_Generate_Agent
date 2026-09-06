@@ -8,6 +8,22 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react()],
 
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, "/");
+          // Lezer is a one-way parser dependency of CodeMirror. Keeping it in
+          // its own lazy chunk avoids both a >500 kB editor chunk and cycles.
+          if (normalized.includes("/node_modules/@lezer/")) {
+            return "editor-parser";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

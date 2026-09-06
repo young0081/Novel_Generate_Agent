@@ -16,6 +16,13 @@ interface WorkflowStepsProps {
 
 type NodeStatus = "done" | "active" | "todo" | "warn";
 
+const STATUS_LABEL: Record<NodeStatus, string> = {
+  done: "已完成",
+  active: "进行中",
+  todo: "未开始",
+  warn: "已中断",
+};
+
 function statusFor(
   i: number,
   current: number,
@@ -25,7 +32,9 @@ function statusFor(
   if (state === "idle") return i === 0 ? "active" : "todo";
   if (i < current) return "done";
   if (i === current) {
-    return state === "stopped" || state === "error" ? "warn" : "active";
+    return state === "stopped" || state === "error" || state === "cancelled"
+      ? "warn"
+      : "active";
   }
   return "todo";
 }
@@ -39,9 +48,14 @@ function WorkflowSteps({
     <ol className={`workflow is-${state}`} aria-label="工作流程">
       {stages.map((s, i) => {
         const status = statusFor(i, current, state);
-        const filled = i < current || state === "done";
+        const filled = state === "done" || (state !== "idle" && i <= current);
         return (
-          <li className={`wf-stage is-${status}`} key={s.key}>
+          <li
+            className={`wf-stage is-${status}`}
+            key={s.key}
+            aria-label={`${s.label}：${STATUS_LABEL[status]}`}
+            aria-current={status === "active" ? "step" : undefined}
+          >
             {i > 0 && (
               <span
                 className={`wf-stage__line${filled ? " is-filled" : ""}`}
@@ -49,12 +63,13 @@ function WorkflowSteps({
               />
             )}
             <span className="wf-stage__node">
+              {status === "active" && (
+                <span className="wf-stage__pulse" aria-hidden="true" />
+              )}
               {status === "done" ? (
                 <IconCheck size={13} />
               ) : status === "warn" ? (
                 <IconWarn size={12} />
-              ) : status === "active" ? (
-                <span className="wf-stage__pulse" aria-hidden="true" />
               ) : (
                 <span className="wf-stage__num">{i + 1}</span>
               )}

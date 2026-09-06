@@ -33,13 +33,22 @@ class _MemoryScreenState extends State<MemoryScreen> {
   List<Memory> _memories = [];
   bool _loading = true;
   String _filter = 'all';
+  bool _manageMode = false;
+  bool _batchDeleting = false;
+  int _batchProgress = 0;
+  final Set<String> _selectedIds = <String>{};
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   Future<void> _load() async {
     setState(() => _loading = true);
     _memories = await LocalStorage.instance.listMemories();
+    final valid = _memories.map((m) => m.id).toSet();
+    _selectedIds.removeWhere((id) => !valid.contains(id));
     if (mounted) setState(() => _loading = false);
   }
 
@@ -53,7 +62,8 @@ class _MemoryScreenState extends State<MemoryScreen> {
       isScrollControlled: true,
       backgroundColor: InkPalette.paperHi,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
       builder: (ctx) => _MemoryEditSheet(existing: existing),
     );
     if (result == null) return;
@@ -62,32 +72,129 @@ class _MemoryScreenState extends State<MemoryScreen> {
   }
 
   Future<void> _delete(Memory m) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: InkPalette.paperHi,
-        title: const Text('删除记忆', style: TextStyle(fontSize: 16)),
-        content: Text('确认删除「${m.title}」？',
-          style: const TextStyle(fontSize: 13.5, color: InkPalette.ink3)),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: TextButton.styleFrom(foregroundColor: InkPalette.cinnabar),
-            child: const Text('删除')),
-        ],
-      ),
-    ) ?? false;
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: InkPalette.paperHi,
+            title: const Text('删除记忆', style: TextStyle(fontSize: 16)),
+            content: Text(
+              '确认删除「${m.title}」？',
+              style: const TextStyle(fontSize: 13.5, color: InkPalette.ink3),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: TextButton.styleFrom(
+                  foregroundColor: InkPalette.cinnabar,
+                ),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
     if (!ok) return;
     await LocalStorage.instance.deleteMemory(m.id);
     await _load();
   }
 
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _toggleAllVisible() {
+    final ids = _visible.map((m) => m.id).toSet();
+    setState(() {
+      if (ids.isNotEmpty && ids.every(_selectedIds.contains)) {
+        _selectedIds.removeAll(ids);
+      } else {
+        _selectedIds.addAll(ids);
+      }
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    final selected = _visible
+        .where((m) => _selectedIds.contains(m.id))
+        .toList();
+    if (selected.isEmpty || _batchDeleting) return;
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: InkPalette.paperHi,
+            title: Text(
+              '删除选中的 ${selected.length} 条记忆',
+              style: const TextStyle(fontSize: 16),
+            ),
+            content: const Text(
+              '删除后无法恢复，是否继续？',
+              style: TextStyle(fontSize: 13.5, color: InkPalette.ink3),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: TextButton.styleFrom(
+                  foregroundColor: InkPalette.cinnabar,
+                ),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+    setState(() {
+      _batchDeleting = true;
+      _batchProgress = 0;
+    });
+    var deleted = 0;
+    var failed = 0;
+    for (final memory in selected) {
+      try {
+        await LocalStorage.instance.deleteMemory(memory.id);
+        deleted++;
+      } catch (_) {
+        failed++;
+      }
+      if (mounted) setState(() => _batchProgress++);
+    }
+    await _load();
+    if (!mounted) return;
+    setState(() {
+      _batchDeleting = false;
+      _batchProgress = 0;
+      _selectedIds.removeWhere((id) => selected.any((m) => m.id == id));
+    });
+    showSuccessSnack(
+      context,
+      failed == 0 ? '已删除 $deleted 条记忆' : '已删除 $deleted 条，$failed 条失败',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator(
-        valueColor: AlwaysStoppedAnimation<Color>(InkPalette.cinnabar)));
+      return const Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(InkPalette.cinnabar),
+        ),
+      );
     }
     return Scaffold(
       backgroundColor: InkPalette.paper,
@@ -99,92 +206,195 @@ class _MemoryScreenState extends State<MemoryScreen> {
       ),
       body: Column(
         children: [
+          if (_memories.length > 1)
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 7, 10, 3),
+              color: InkPalette.paperHi,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${_memories.length} 条记忆',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: InkPalette.ink3,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _batchDeleting
+                        ? null
+                        : () => setState(() {
+                            _manageMode = !_manageMode;
+                            _selectedIds.clear();
+                          }),
+                    child: Text(_manageMode ? '完成' : '批量管理'),
+                  ),
+                ],
+              ),
+            ),
           // 分类过滤条
           Container(
             height: 46,
             decoration: const BoxDecoration(
               color: InkPalette.paperHi,
-              border: Border(bottom: BorderSide(color: InkPalette.line, width: 0.8))),
+              border: Border(
+                bottom: BorderSide(color: InkPalette.line, width: 0.8),
+              ),
+            ),
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               children: [
-                _Chip(label: '全部', active: _filter == 'all',
-                  onTap: () => setState(() => _filter = 'all')),
-                ..._kinds.entries.map((e) => _Chip(
-                  label: e.value, active: _filter == e.key,
-                  onTap: () => setState(() => _filter = e.key))),
+                _Chip(
+                  label: '全部',
+                  active: _filter == 'all',
+                  onTap: () => setState(() => _filter = 'all'),
+                ),
+                ..._kinds.entries.map(
+                  (e) => _Chip(
+                    label: e.value,
+                    active: _filter == e.key,
+                    onTap: () => setState(() => _filter = e.key),
+                  ),
+                ),
               ],
             ),
           ),
+          if (_manageMode && _visible.isNotEmpty)
+            BatchActionsBar(
+              selectedCount: _selectedIds
+                  .intersection(_visible.map((m) => m.id).toSet())
+                  .length,
+              totalCount: _visible.length,
+              allSelected:
+                  _visible.isNotEmpty &&
+                  _visible.every((m) => _selectedIds.contains(m.id)),
+              busy: _batchDeleting,
+              progress: _batchDeleting ? _batchProgress : null,
+              onToggleAll: _toggleAllVisible,
+              onClear: () => setState(() => _selectedIds.clear()),
+              onDelete: _deleteSelected,
+            ),
           Expanded(
             child: _visible.isEmpty
-                ? Center(child: EmptyState(
-                    icon: Icons.psychology_outlined,
-                    message: '暂无记忆',
-                    hint: '录入人物、世界观等设定，AI 创作时会自动带着这些设定写作。'))
+                ? Center(
+                    child: EmptyState(
+                      icon: Icons.psychology_outlined,
+                      message: '暂无记忆',
+                      hint: '录入人物、世界观等设定，AI 创作时会自动带着这些设定写作。',
+                    ),
+                  )
                 : RefreshIndicator(
-                    onRefresh: _load, color: InkPalette.cinnabar,
+                    onRefresh: _load,
+                    color: InkPalette.cinnabar,
                     child: ListView.separated(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
                       itemCount: _visible.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
                       itemBuilder: (context, i) {
                         final m = _visible[i];
-                        return StaggeredEntrance(index: i,
+                        return StaggeredEntrance(
+                          index: i,
                           child: GestureDetector(
-                            onTap: () => _edit(m),
+                            onTap: () =>
+                                _manageMode ? _toggleSelected(m.id) : _edit(m),
                             child: Container(
                               padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
                               decoration: BoxDecoration(
                                 color: InkPalette.paperHi,
                                 borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: InkPalette.line, width: 0.8)),
+                                border: Border.all(
+                                  color: InkPalette.line,
+                                  width: 0.8,
+                                ),
+                              ),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
+                                  if (_manageMode)
+                                    Checkbox(
+                                      value: _selectedIds.contains(m.id),
+                                      onChanged: (_) => _toggleSelected(m.id),
+                                      activeColor: InkPalette.cinnabar,
+                                      visualDensity: VisualDensity.compact,
+                                    ),
                                   Container(
                                     padding: const EdgeInsets.all(6),
                                     decoration: BoxDecoration(
                                       color: InkPalette.cinnabarWash,
-                                      borderRadius: BorderRadius.circular(7)),
-                                    child: Icon(_kindIcons[m.kind] ?? Icons.label_outline,
-                                      size: 17, color: InkPalette.cinnabar)),
+                                      borderRadius: BorderRadius.circular(7),
+                                    ),
+                                    child: Icon(
+                                      _kindIcons[m.kind] ?? Icons.label_outline,
+                                      size: 17,
+                                      color: InkPalette.cinnabar,
+                                    ),
+                                  ),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        Row(children: [
-                                          Flexible(child: Text(m.title,
-                                            style: const TextStyle(fontSize: 14,
-                                              fontWeight: FontWeight.w600,
-                                              color: InkPalette.ink),
-                                            maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                          const SizedBox(width: 8),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6, vertical: 1.5),
-                                            decoration: BoxDecoration(
-                                              color: InkPalette.paperLo,
-                                              borderRadius: BorderRadius.circular(6)),
-                                            child: Text(_kinds[m.kind] ?? '其他',
-                                              style: const TextStyle(
-                                                fontSize: 10.5, color: InkPalette.ink3))),
-                                        ]),
+                                        Row(
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                m.title,
+                                                style: const TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: InkPalette.ink,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 1.5,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: InkPalette.paperLo,
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                              ),
+                                              child: Text(
+                                                _kinds[m.kind] ?? '其他',
+                                                style: const TextStyle(
+                                                  fontSize: 10.5,
+                                                  color: InkPalette.ink3,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                         const SizedBox(height: 4),
-                                        Text(m.content,
-                                          style: const TextStyle(fontSize: 12.5,
-                                            color: InkPalette.ink3, height: 1.45),
+                                        Text(
+                                          m.content,
+                                          style: const TextStyle(
+                                            fontSize: 12.5,
+                                            color: InkPalette.ink3,
+                                            height: 1.45,
+                                          ),
                                           maxLines: 2,
-                                          overflow: TextOverflow.ellipsis),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
                                       ],
                                     ),
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.delete_outline_rounded,
-                                      size: 19, color: InkPalette.ink4),
-                                    onPressed: () => _delete(m)),
+                                    icon: const Icon(
+                                      Icons.delete_outline_rounded,
+                                      size: 19,
+                                      color: InkPalette.ink4,
+                                    ),
+                                    onPressed: () => _delete(m),
+                                  ),
                                 ],
                               ),
                             ),
@@ -201,7 +411,9 @@ class _MemoryScreenState extends State<MemoryScreen> {
 }
 
 class _Chip extends StatelessWidget {
-  final String label; final bool active; final VoidCallback onTap;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
   const _Chip({required this.label, required this.active, required this.onTap});
 
   @override
@@ -218,11 +430,17 @@ class _Chip extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: active ? InkPalette.cinnabar : InkPalette.line,
-              width: active ? 1.1 : 0.8)),
-          child: Text(label,
-            style: TextStyle(fontSize: 12.5,
+              width: active ? 1.1 : 0.8,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
               fontWeight: active ? FontWeight.w600 : FontWeight.normal,
-              color: active ? InkPalette.cinnabar : InkPalette.ink3)),
+              color: active ? InkPalette.cinnabar : InkPalette.ink3,
+            ),
+          ),
         ),
       ),
     );
@@ -237,20 +455,29 @@ class _MemoryEditSheet extends StatefulWidget {
 }
 
 class _MemoryEditSheetState extends State<_MemoryEditSheet> {
-  late final TextEditingController _title =
-      TextEditingController(text: widget.existing?.title ?? '');
-  late final TextEditingController _content =
-      TextEditingController(text: widget.existing?.content ?? '');
+  late final TextEditingController _title = TextEditingController(
+    text: widget.existing?.title ?? '',
+  );
+  late final TextEditingController _content = TextEditingController(
+    text: widget.existing?.content ?? '',
+  );
   late String _kind = widget.existing?.kind ?? 'character';
 
   @override
-  void dispose() { _title.dispose(); _content.dispose(); super.dispose(); }
+  void dispose() {
+    _title.dispose();
+    _content.dispose();
+    super.dispose();
+  }
 
   void _submit() {
     if (_title.text.trim().isEmpty || _content.text.trim().isEmpty) return;
     final m = widget.existing == null
-        ? Memory.create(kind: _kind, title: _title.text.trim(),
-            content: _content.text.trim())
+        ? Memory.create(
+            kind: _kind,
+            title: _title.text.trim(),
+            content: _content.text.trim(),
+          )
         : (widget.existing!
             ..kind = _kind
             ..title = _title.text.trim()
@@ -267,46 +494,77 @@ class _MemoryEditSheetState extends State<_MemoryEditSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(widget.existing == null ? '新增记忆' : '编辑记忆',
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
-              color: InkPalette.ink)),
+          Text(
+            widget.existing == null ? '新增记忆' : '编辑记忆',
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: InkPalette.ink,
+            ),
+          ),
           const SizedBox(height: 14),
-          Wrap(spacing: 8, runSpacing: 8,
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: _kinds.entries.map((e) {
               final active = _kind == e.key;
               return GestureDetector(
                 onTap: () => setState(() => _kind = e.key),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
-                    color: active ? InkPalette.cinnabarWash : InkPalette.paperLo,
+                    color: active
+                        ? InkPalette.cinnabarWash
+                        : InkPalette.paperLo,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
                       color: active ? InkPalette.cinnabar : InkPalette.line,
-                      width: active ? 1.1 : 0.8)),
-                  child: Text(e.value,
-                    style: TextStyle(fontSize: 12.5,
+                      width: active ? 1.1 : 0.8,
+                    ),
+                  ),
+                  child: Text(
+                    e.value,
+                    style: TextStyle(
+                      fontSize: 12.5,
                       fontWeight: active ? FontWeight.w600 : FontWeight.normal,
-                      color: active ? InkPalette.cinnabar : InkPalette.ink3)),
+                      color: active ? InkPalette.cinnabar : InkPalette.ink3,
+                    ),
+                  ),
                 ),
               );
-            }).toList()),
+            }).toList(),
+          ),
           const SizedBox(height: 14),
-          TextField(controller: _title,
+          TextField(
+            controller: _title,
             decoration: const InputDecoration(
-              labelText: '标题', hintText: '如：林惊羽')),
+              labelText: '标题',
+              hintText: '如：林惊羽',
+            ),
+          ),
           const SizedBox(height: 10),
-          TextField(controller: _content, minLines: 3, maxLines: 6,
+          TextField(
+            controller: _content,
+            minLines: 3,
+            maxLines: 6,
             decoration: const InputDecoration(
               labelText: '内容',
-              hintText: '如：主角，冷静重情义，练气九层，目标是找到杀师仇人…')),
+              hintText: '如：主角，冷静重情义，练气九层，目标是找到杀师仇人…',
+            ),
+          ),
           const SizedBox(height: 16),
-          SizedBox(width: double.infinity,
+          SizedBox(
+            width: double.infinity,
             child: FilledButton(
               onPressed: _submit,
-              child: Text(widget.existing == null ? '保存' : '更新'))),
+              child: Text(widget.existing == null ? '保存' : '更新'),
+            ),
+          ),
         ],
       ),
     );
-}
+  }
 }

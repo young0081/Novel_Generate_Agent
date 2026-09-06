@@ -23,8 +23,9 @@ import {
   IconProviders,
   IconHistory,
   IconTools,
+  IconStop,
 } from "../components/icons";
-import { describeError, invokeTool } from "../lib/core";
+import { cancel, describeError, newRequestId } from "../lib/core";
 import { useToast } from "../components/Toast";
 import {
   runGoalLive,
@@ -39,13 +40,18 @@ import {
   isProviderCompatibilityError,
   toolGlyph,
   previewArgs,
+  settlePendingTools,
   upsertStep,
   WRITE_STAGES,
+  reachedWorkflowStage,
+  stopReasonLabel,
   type RunStep,
 } from "../lib/agentRun";
 import WorkStatus from "../components/agent/WorkStatus";
 import WorkflowSteps from "../components/agent/WorkflowSteps";
 import AgentFeed from "../components/agent/AgentFeed";
+import { getSession } from "../lib/sessions";
+import { scrollLiveAnchor } from "../lib/liveScroll";
 
 const DEFAULT_TITLE = "新章节";
 const GOAL_EXAMPLE = "例如：写第一章，介绍主角林惊羽在北境的登场";
@@ -136,31 +142,80 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
 
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId ?? null);
   const [continuingTitle, setContinuingTitle] = useState<string | null>(null);
+  const [loadingSession, setLoadingSession] = useState(!!initialSessionId);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
 
   const stepSeq = useRef(0);
   const liveTailRef = useRef<HTMLDivElement>(null);
   const pendingDeltaRef = useRef<AgentStep | null>(null);
   const rafRef = useRef<number | null>(null);
+  const activeRequestRef = useRef<string | null>(null);
+  const cancelRequestedRef = useRef(false);
 
   useEffect(() => {
-    if (running) {
-      liveTailRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }
+    const frame = window.requestAnimationFrame(() => {
+      scrollLiveAnchor(liveTailRef.current, { live: running });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [steps, running]);
 
   const handleStepNow = useCallback((s: AgentStep) => {
-    if (s.phase === "delta" || s.phase === "model") {
-      setSteps((prev) => upsertStep(prev, s, () => (stepSeq.current += 1)));
-    } else if (s.phase === "finish") {
+    setSteps((prev) => upsertStep(prev, s, () => (stepSeq.current += 1)));
+    if (s.phase === "finish") {
+      setCancelled(s.reason === "cancelled");
       setSuccess(s.success);
       setFinishNote(
         s.success
           ? `创作完成（共 ${s.steps} 步）`
-          : `已停止：${s.reason || "未完成"}（共 ${s.steps} 步）`,
+          : `${stopReasonLabel(s.reason)}（共 ${s.steps} 步）`,
       );
       if (s.final != null) setFinalAnswer(s.final);
     }
   }, []);
+
+  useEffect(() => {
+    if (!initialSessionId) {
+      setLoadingSession(false);
+      return;
+    }
+    let alive = true;
+    setLoadingSession(true);
+    void getSession(initialSessionId)
+      .then((record) => {
+        if (!alive) return;
+        if (record.kind !== "writing") {
+          throw new Error("该记录不是创作会话，无法在此续写");
+        }
+        setSessionId(record.session.id);
+        setContinuingTitle(record.session.title || DEFAULT_TITLE);
+        setTitle(record.session.title || DEFAULT_TITLE);
+        setGoal(record.goal ?? "");
+        setSession(record.session);
+        const lastAnswer = [...record.session.messages]
+          .reverse()
+          .find(
+            (message) =>
+              message.role === "assistant" &&
+              !!message.content.trim() &&
+              !message.tool_call,
+          );
+        setFinalAnswer(lastAnswer?.content ?? null);
+      })
+      .catch((loadError) => {
+        if (!alive) return;
+        const message = describeError(loadError);
+        setSessionId(null);
+        setError(message);
+        toast.err(`载入会话失败：${message}`);
+      })
+      .finally(() => {
+        if (alive) setLoadingSession(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [initialSessionId]);
 
   const flushPendingDelta = useCallback(() => {
     rafRef.current = null;
@@ -191,6 +246,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
   useEffect(() => {
     return () => {
       if (rafRef.current != null) window.cancelAnimationFrame(rafRef.current);
+      if (activeRequestRef.current) void cancel(activeRequestRef.current);
     };
   }, []);
 
@@ -202,6 +258,9 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     }
     const t = title.trim() || DEFAULT_TITLE;
     setRunning(true);
+    setCancelling(false);
+    setCancelled(false);
+    cancelRequestedRef.current = false;
     setError(null);
     setNoProvider(false);
     setProviderCompat(false);
@@ -211,8 +270,17 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     setSession(null);
     setFinalAnswer(null);
     stepSeq.current = 0;
+    const requestId = newRequestId("studio");
+    activeRequestRef.current = requestId;
     try {
-      const run = await runGoalLive(g, t, handleStep, sessionId ?? undefined);
+      const run = await runGoalLive(
+        g,
+        t,
+        handleStep,
+        sessionId ?? undefined,
+        "writing",
+        requestId,
+      );
       setSession(run.session);
       setSessionId(run.session.id);
       setContinuingTitle(run.session.title || t);
@@ -234,37 +302,49 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
         return sessionFinal || null;
       });
 
-      // ── Frontend auto-save fallback ─────────────────────────────────────────
-      // If the AI never called write_file but produced substantial text, save it
-      // now. Skip if the backend already saved it (auto_saved_path present).
-      const backendAlreadySaved =
-        (run.outcome as { auto_saved_path?: string }).auto_saved_path != null;
-      const writeFileCalled = sessionMsgs.some(
-        (m) => m.tool_call?.name === "write_file",
-      );
-      // Use the richer of event-streamed vs session-extracted text
-      // (we access state read via a ref-like trick — just use sessionFinal here
-      //  since the finish event's finalAnswer state update may not have flushed)
-      if (!backendAlreadySaved && !writeFileCalled && sessionFinal.length > 200) {
-        const safeName = t.replace(/[/\\:*?"<>|]/g, "_");
-        const filePath = `book/${safeName}.md`;
-        try {
-          await invokeTool("write_file", { path: filePath, content: sessionFinal });
-          toast.ok(`创作完成，已保存至 ${filePath}`);
-        } catch {
-          toast.ok("创作完成");
-        }
+      const stoppedReason = run.outcome.stopped_reason;
+      const terminalToolStatus = stoppedReason === "cancelled" || cancelRequestedRef.current
+        ? "cancelled"
+        : stoppedReason === "goal_reached"
+          ? "success"
+          : "error";
+      setSteps((prev) => settlePendingTools(prev, terminalToolStatus));
+      if (stoppedReason === "cancelled" || cancelRequestedRef.current) {
+        setCancelled(true);
+        setSuccess(false);
+        setFinishNote("已停止创作");
+        toast.info("已停止创作");
+      } else if (stoppedReason !== "goal_reached") {
+        setSuccess(false);
+        setFinishNote(stopReasonLabel(stoppedReason));
+        toast.info("本次创作未完整完成，可调整目标后继续");
+      } else if (run.outcome.auto_save_error) {
+        toast.err(`创作完成，但成稿自动保存失败：${run.outcome.auto_save_error}`);
+      } else if (run.outcome.auto_saved_path) {
+        toast.ok(`创作完成，已保存至 ${run.outcome.auto_saved_path}`);
       } else {
         toast.ok("创作完成");
       }
+      if (run.outcome.warning) toast.info(run.outcome.warning);
     } catch (e) {
-      const msg = describeError(e);
-      setError(msg);
-      if (isNoProviderError(msg)) setNoProvider(true);
-      else if (isProviderCompatibilityError(msg)) setProviderCompat(true);
-      else toast.err(`创作失败：${msg}`);
+      const stopped = cancelRequestedRef.current;
+      const msg = stopped ? "已由用户停止" : describeError(e);
+      if (stopped) {
+        setSteps((prev) => settlePendingTools(prev, "cancelled", msg));
+        setCancelled(true);
+        setSuccess(false);
+        setFinishNote("已停止创作");
+      } else {
+        setSteps((prev) => settlePendingTools(prev, "error", msg));
+        setError(msg);
+        if (isNoProviderError(msg)) setNoProvider(true);
+        else if (isProviderCompatibilityError(msg)) setProviderCompat(true);
+        else toast.err(`创作失败：${msg}`);
+      }
     } finally {
+      if (activeRequestRef.current === requestId) activeRequestRef.current = null;
       setRunning(false);
+      setCancelling(false);
     }
   }, [goal, title, handleStep, toast, sessionId]);
 
@@ -275,6 +355,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     setSession(null);
     setFinalAnswer(null);
     setError(null);
+    setCancelled(false);
     setNoProvider(false);
     setProviderCompat(false);
     setSessionId(null);
@@ -283,7 +364,22 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     stepSeq.current = 0;
   }, []);
 
-  const hasRun = running || steps.length > 0 || session !== null || error !== null;
+  const stop = useCallback(async () => {
+    if (!running || cancelling) return;
+    setCancelling(true);
+    cancelRequestedRef.current = true;
+    try {
+      const requestId = activeRequestRef.current;
+      if (requestId) await cancel(requestId);
+      toast.info("已请求停止，正在收束当前步骤…");
+    } catch (cancelError) {
+      cancelRequestedRef.current = false;
+      toast.err(`停止失败：${describeError(cancelError)}`);
+      setCancelling(false);
+    }
+  }, [running, cancelling, toast]);
+
+  const hasRun = running || steps.length > 0 || session !== null || error !== null || finishNote !== null;
   const showResult = !running && (session !== null || finalAnswer !== null);
   const toolCount = steps.reduce((n, s) => n + s.toolCalls.length, 0);
   const lastStepNo = steps.length > 0 ? steps[steps.length - 1].step : 0;
@@ -293,12 +389,15 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     finished: finishNote !== null,
     success,
     errored: error !== null,
+    cancelling,
+    cancelled,
   });
-  const wf = workflowView(phase);
-  const currentToolNote =
-    phase === "tooling" && steps.length > 0 && steps[steps.length - 1].toolCalls[0]
-      ? steps[steps.length - 1].toolCalls[0].name
-      : undefined;
+  const wf = workflowView(phase, reachedWorkflowStage(steps));
+  const currentToolNote = phase === "tooling" && steps.length > 0
+    ? steps[steps.length - 1].toolCalls.find(
+        (call) => call.status === "queued" || call.status === "running",
+      )?.name
+    : undefined;
 
   return (
     <div className="work-content studio2">
@@ -351,11 +450,27 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
           <button
             className="btn btn--primary"
             onClick={() => void start()}
-            disabled={running}
+            disabled={loadingSession || running}
           >
-            {running ? <Spinner size={16} /> : <IconBrush size={17} />}
-            {running ? "运笔中…" : sessionId ? "继续创作" : "开始创作"}
+            {loadingSession || running ? <Spinner size={16} /> : <IconBrush size={17} />}
+            {loadingSession
+              ? "载入会话…"
+              : running
+                ? "运笔中…"
+                : sessionId
+                  ? "继续创作"
+                  : "开始创作"}
           </button>
+          {running && (
+            <button
+              className="btn btn--danger"
+              onClick={() => void stop()}
+              disabled={cancelling}
+            >
+              {cancelling ? <Spinner size={15} /> : <IconStop size={15} />}
+              {cancelling ? "停止中…" : "停止"}
+            </button>
+          )}
         </div>
         <div className="studio2__hints">
           <div className="studio2__hint">
@@ -408,10 +523,10 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
               )}
 
               {showResult && finalAnswer && finalAnswer.trim() && (
-                <div className="studio2__final">
+                <div className={`studio2__final${success ? "" : " is-partial"}`}>
                   <div className="studio2__final-head">
                     <span className="studio2__final-mark"><IconScroll size={16} /></span>
-                    成稿
+                    {success ? "成稿" : cancelled ? "已停止的草稿" : "未完成草稿"}
                     {finishNote && <span className="studio2__final-note">{finishNote}</span>}
                   </div>
                   <div className="studio2__final-body">{finalAnswer}</div>
@@ -424,13 +539,12 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
                 </div>
               )}
 
-              {steps.length > 0 && (
+              {(running || steps.length > 0) && (
                 <div className="studio2__live">
                   <div className="studio2__section-label">
                     {running ? (
                       <>
-                        <span className="ink-pulse" aria-hidden="true" />
-                        运笔中… 第 {lastStepNo} 步
+                        创作过程 · 第 {Math.max(lastStepNo, 1)} 步
                       </>
                     ) : (
                       <>
@@ -442,6 +556,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
                   <AgentFeed
                     steps={steps}
                     running={running}
+                    phase={phase}
                     pendingText="AI 正在思索下一笔…"
                     tailRef={liveTailRef}
                   />
@@ -462,12 +577,6 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
                 </div>
               )}
 
-              {running && steps.length === 0 && (
-                <div className="studio2__warming">
-                  <Spinner size={32} />
-                  <span>正在唤起模型，构思开篇…</span>
-                </div>
-              )}
             </>
           )}
         </section>

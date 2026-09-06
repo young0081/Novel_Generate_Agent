@@ -1,26 +1,88 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">墨 · 创作</title>
+  <desc id="desc">深墨底上的展开稿纸、朱砂刷痕和金色灵感星芒。</desc>
   <defs>
-    <linearGradient id="seal" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"   stop-color="#c03528"/>
-      <stop offset="1"   stop-color="#a02018"/>
+    <linearGradient id="tile" x1="0.16" y1="0.02" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#263630"/>
+      <stop offset="0.5" stop-color="#17231f"/>
+      <stop offset="1" stop-color="#0e1714"/>
     </linearGradient>
+    <linearGradient id="pageL" x1="0.12" y1="0.08" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#fff7e8"/>
+      <stop offset="0.62" stop-color="#f4e8d0"/>
+      <stop offset="1" stop-color="#d9c5a7"/>
+    </linearGradient>
+    <linearGradient id="pageR" x1="0.88" y1="0.08" x2="0.1" y2="1">
+      <stop offset="0" stop-color="#fff8eb"/>
+      <stop offset="0.62" stop-color="#f1e4cc"/>
+      <stop offset="1" stop-color="#d3bda0"/>
+    </linearGradient>
+    <linearGradient id="verm" x1="0.16" y1="0.1" x2="0.84" y2="0.94">
+      <stop offset="0" stop-color="#dc6547"/>
+      <stop offset="0.4" stop-color="#c94530"/>
+      <stop offset="1" stop-color="#8f2219"/>
+    </linearGradient>
+    <filter id="tileShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#07100d" flood-opacity="0.52"/>
+    </filter>
+    <filter id="bookShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#070d0b" flood-opacity="0.42"/>
+    </filter>
+    <filter id="grain" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.76" numOctaves="2" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="table" tableValues="0 0.1"/></feComponentTransfer>
+    </filter>
+    <filter id="goldGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
   </defs>
 
-  <!-- Seal body: near-square with 2.5% corner radius -->
-  <rect width="512" height="512" rx="13" ry="13" fill="url(#seal)"/>
+  <!-- 墨色方印：圆角只做容器，不抢走书页和笔锋的主叙事。 -->
+  <rect x="28" y="28" width="968" height="968" rx="196" fill="#080e0c" opacity="0.62" filter="url(#tileShadow)"/>
+  <rect x="28" y="28" width="968" height="968" rx="196" fill="url(#tile)"/>
+  <rect x="28" y="28" width="968" height="968" rx="196" fill="#f4efe3" opacity="0.08" filter="url(#grain)"/>
+  <path d="M108 287 C158 185 252 111 370 82" fill="none" stroke="#b4c2b7" stroke-opacity="0.13" stroke-width="4" stroke-linecap="round"/>
+  <path d="M100 322 C147 219 240 145 347 111" fill="none" stroke="#b4c2b7" stroke-opacity="0.07" stroke-width="3" stroke-linecap="round"/>
 
-  <!-- Traditional double-line inner border -->
-  <rect x="20" y="20" width="472" height="472" rx="6" ry="6"
-        fill="none" stroke="#f5ede0" stroke-width="5" stroke-opacity="0.82"/>
-  <rect x="33" y="33" width="446" height="446" rx="3" ry="3"
-        fill="none" stroke="#f5ede0" stroke-width="2.5" stroke-opacity="0.50"/>
+  <!-- 展开的稿纸：顶部弧线 + 底部折页形成“成书”的轮廓。 -->
+  <g filter="url(#bookShadow)">
+    <path d="M152 296 C248 246 354 252 493 340 C506 348 514 361 514 378 L514 830 C394 751 272 748 151 802 C140 807 132 798 134 786 Z" fill="url(#pageL)"/>
+    <path d="M531 378 C531 361 539 348 552 340 C691 252 797 246 893 296 L911 786 C913 798 905 807 894 802 C773 748 651 751 531 830 Z" fill="url(#pageR)"/>
+  </g>
+  <path d="M152 296 C248 246 354 252 493 340 C506 348 514 361 514 378 L514 830 C394 751 272 748 151 802 C140 807 132 798 134 786 Z" fill="url(#pageL)"/>
+  <path d="M531 378 C531 361 539 348 552 340 C691 252 797 246 893 296 L911 786 C913 798 905 807 894 802 C773 748 651 751 531 830 Z" fill="url(#pageR)"/>
 
-  <!-- 墨 character — large, centered, serif -->
-  <text x="256" y="262"
-        text-anchor="middle"
-        dominant-baseline="central"
-        font-family="STSong, SimSun, 'Songti SC', 'Noto Serif SC', Georgia, serif"
-        font-size="330"
-        font-weight="700"
-        fill="#f5ede0">墨</text>
+  <!-- 纸张的手工纤维与底部层页，保持在大尺寸可见、小尺寸不喧宾夺主。 -->
+  <path d="M159 786 C281 735 394 740 514 818" fill="none" stroke="#bca98b" stroke-opacity="0.62" stroke-width="13" stroke-linecap="round"/>
+  <path d="M531 818 C651 740 764 735 886 786" fill="none" stroke="#b49d7e" stroke-opacity="0.56" stroke-width="13" stroke-linecap="round"/>
+  <path d="M159 812 C281 767 394 773 504 839" fill="none" stroke="#f8edd9" stroke-opacity="0.82" stroke-width="9" stroke-linecap="round"/>
+  <path d="M541 839 C650 773 764 767 886 812" fill="none" stroke="#f5e8d0" stroke-opacity="0.7" stroke-width="9" stroke-linecap="round"/>
+  <path d="M205 663 C292 636 370 642 453 678" fill="none" stroke="#b9a98f" stroke-opacity="0.44" stroke-width="8" stroke-linecap="round"/>
+  <path d="M591 678 C674 642 752 636 839 663" fill="none" stroke="#b9a98f" stroke-opacity="0.38" stroke-width="8" stroke-linecap="round"/>
+  <path d="M214 700 C294 680 367 685 436 710" fill="none" stroke="#c7b79a" stroke-opacity="0.28" stroke-width="6" stroke-linecap="round"/>
+  <path d="M608 710 C677 685 750 680 830 700" fill="none" stroke="#c7b79a" stroke-opacity="0.24" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- 书脊：两条微亮的折线让中心在 32px 下仍不丢失。 -->
+  <path d="M493 340 C506 355 513 370 513 391 L513 824" fill="none" stroke="#bca98d" stroke-opacity="0.66" stroke-width="8" stroke-linecap="round"/>
+  <path d="M531 378 C527 363 522 351 514 340" fill="none" stroke="#fff8e9" stroke-opacity="0.75" stroke-width="6" stroke-linecap="round"/>
+  <path d="M531 340 C523 351 518 363 514 378 L514 824" fill="none" stroke="#756854" stroke-opacity="0.48" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- 朱砂刷痕：三层不规则边缘模拟生图中的手工刷感。 -->
+  <path d="M205 776 C326 744 427 674 500 560 C574 444 626 318 745 205" fill="none" stroke="#681b15" stroke-opacity="0.48" stroke-width="84" stroke-linecap="round"/>
+  <path d="M207 759 C325 728 422 659 488 555 C559 443 612 322 738 205" fill="none" stroke="url(#verm)" stroke-width="62" stroke-linecap="round"/>
+  <path d="M220 749 C330 713 409 650 470 558 C536 458 591 343 705 236" fill="none" stroke="#ee8060" stroke-opacity="0.48" stroke-width="12" stroke-linecap="round"/>
+  <path d="M694 198 L771 239 L735 279 L676 241 Z" fill="#cf5138"/>
+  <path d="M694 198 L771 239 L724 231 Z" fill="#f28c67" opacity="0.7"/>
+  <path d="M724 205 L822 150" fill="none" stroke="#cb4934" stroke-width="9" stroke-linecap="round" opacity="0.78"/>
+  <path d="M742 231 L850 172" fill="none" stroke="#d15a3f" stroke-width="5" stroke-linecap="round" opacity="0.58"/>
+  <path d="M756 258 L873 208" fill="none" stroke="#b63b2c" stroke-width="4" stroke-linecap="round" opacity="0.52"/>
+
+  <!-- 金色星芒：只保留一个主星和两颗微点。 -->
+  <circle cx="802" cy="184" r="26" fill="#d8a65f" opacity="0.22" filter="url(#goldGlow)"/>
+  <path d="M802 142 L814 171 L844 184 L814 197 L802 228 L790 197 L760 184 L790 171 Z" fill="#e6bb78"/>
+  <circle cx="870" cy="143" r="7" fill="#f0cf91" opacity="0.9"/>
+  <circle cx="742" cy="128" r="5" fill="#dfb46f" opacity="0.86"/>
+
+  <rect x="62" y="62" width="900" height="900" rx="178" fill="none" stroke="#dbe7dd" stroke-opacity="0.12" stroke-width="4"/>
 </svg>
