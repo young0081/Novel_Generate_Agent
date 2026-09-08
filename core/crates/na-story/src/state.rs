@@ -192,10 +192,47 @@ pub struct Timeline {
     pub events: Vec<TimelineEvent>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TimelineEvent {
     pub chapter: u32,
     pub description: String,
+}
+
+/// Accept the pre-0.3 story-state format where a timeline event was stored as
+/// a bare description string. The chapter is unknown in that format and is
+/// represented as zero until the user or a later save assigns it.
+impl<'de> Deserialize<'de> for TimelineEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct TimelineEventObject {
+            chapter: Option<u32>,
+            description: Option<String>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(description) => Ok(Self {
+                chapter: 0,
+                description,
+            }),
+            serde_json::Value::Object(_) => {
+                let object: TimelineEventObject =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    chapter: object.chapter.unwrap_or_default(),
+                    description: object
+                        .description
+                        .ok_or_else(|| serde::de::Error::missing_field("description"))?,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "timeline event must be a string or an object",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -341,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_string_world_rules_are_migrated_on_load() {
+    fn legacy_string_state_fields_are_migrated_on_load() {
         let json = serde_json::json!({
             "meta": {"title": "旧作品", "genre": "修真", "last_chapter": 2},
             "world": {"rules": [
@@ -358,7 +395,10 @@ mod tests {
                     "goals": ["寻找真相"]
                 }
             },
-            "timeline": {"current_chapter": 2, "events": []},
+            "timeline": {"current_chapter": 2, "events": [
+                "玄门师尊合道，天道开始暗中护持主角",
+                {"chapter": 1, "description": "主角踏入修行"}
+            ]},
             "knowledge_matrix": {"entries": {}},
             "foreshadows": [],
             "hard_constraints": [],
@@ -381,9 +421,16 @@ mod tests {
         );
         assert!(legacy_character.id.starts_with("legacy_character_"));
         assert_eq!(state.characters["c_new"].id, "c_new");
+        assert_eq!(state.timeline.events[0].chapter, 0);
+        assert_eq!(
+            state.timeline.events[0].description,
+            "玄门师尊合道，天道开始暗中护持主角"
+        );
+        assert_eq!(state.timeline.events[1].chapter, 1);
         let saved = serde_json::to_value(&state).unwrap();
         assert!(saved["world"]["rules"][0].is_object());
         assert!(saved["characters"]["legacy_master"].is_object());
+        assert!(saved["timeline"]["events"][0].is_object());
 
         let reloaded: StoryState = serde_json::from_value(saved).unwrap();
         assert_eq!(reloaded.characters["legacy_master"].id, legacy_character.id);
