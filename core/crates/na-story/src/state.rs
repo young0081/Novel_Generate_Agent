@@ -95,7 +95,7 @@ fn legacy_rule_id(description: &str) -> String {
     format!("legacy_rule_{hash:08x}")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CharacterState {
     pub id: CharacterId,
     pub name: String,
@@ -105,6 +105,83 @@ pub struct CharacterState {
     pub current_status: String,
     /// Goals/motivations
     pub goals: Vec<String>,
+}
+
+/// Accept the pre-0.3 story-state format where a character was stored as a
+/// plain description string. New saves always serialize the structured form.
+impl<'de> Deserialize<'de> for CharacterState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CharacterStateObject {
+            id: Option<CharacterId>,
+            name: Option<String>,
+            core_traits: Option<Vec<String>>,
+            current_status: Option<String>,
+            goals: Option<Vec<String>>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(description) => Ok(Self {
+                id: legacy_character_id(&description),
+                name: legacy_character_name(&description),
+                core_traits: vec![],
+                current_status: description,
+                goals: vec![],
+            }),
+            serde_json::Value::Object(_) => {
+                let object: CharacterStateObject =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                let name = object.name.unwrap_or_default();
+                let current_status = object.current_status.unwrap_or_default();
+                let id = object.id.unwrap_or_else(|| {
+                    let seed = if name.is_empty() {
+                        current_status.clone()
+                    } else {
+                        format!("{name}|{current_status}")
+                    };
+                    legacy_character_id(&seed)
+                });
+                Ok(Self {
+                    id,
+                    name,
+                    core_traits: object.core_traits.unwrap_or_default(),
+                    current_status,
+                    goals: object.goals.unwrap_or_default(),
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "character state must be a string or an object",
+            )),
+        }
+    }
+}
+
+fn legacy_character_id(description: &str) -> String {
+    // Stable, dependency-free FNV-1a identifier for migrated legacy characters.
+    let mut hash = 0x811c9dc5u32;
+    for byte in description.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    format!("legacy_character_{hash:08x}")
+}
+
+fn legacy_character_name(description: &str) -> String {
+    description
+        .split(|character: char| {
+            matches!(
+                character,
+                '，' | ',' | '。' | '.' | '；' | ';' | ':' | '：' | '\n'
+            )
+        })
+        .next()
+        .unwrap_or(description)
+        .trim()
+        .to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -271,7 +348,16 @@ mod tests {
                 "天道师父会自觉兜底，但底层代码残缺频繁掉血",
                 {"id": "wr_new", "description": "灵气不足时法术会衰减"}
             ]},
-            "characters": {},
+            "characters": {
+                "legacy_master": "师尊，身合天道的修仙界大能，化为天道后仍在暗中护持主角",
+                "c_new": {
+                    "id": "c_new",
+                    "name": "主角",
+                    "core_traits": ["坚韧"],
+                    "current_status": "初入修行",
+                    "goals": ["寻找真相"]
+                }
+            },
             "timeline": {"current_chapter": 2, "events": []},
             "knowledge_matrix": {"entries": {}},
             "foreshadows": [],
@@ -287,8 +373,21 @@ mod tests {
         );
         assert!(state.world.rules[0].id.starts_with("legacy_rule_"));
         assert_eq!(state.world.rules[1].id, "wr_new");
+        let legacy_character = &state.characters["legacy_master"];
+        assert_eq!(legacy_character.name, "师尊");
+        assert_eq!(
+            legacy_character.current_status,
+            "师尊，身合天道的修仙界大能，化为天道后仍在暗中护持主角"
+        );
+        assert!(legacy_character.id.starts_with("legacy_character_"));
+        assert_eq!(state.characters["c_new"].id, "c_new");
         let saved = serde_json::to_value(&state).unwrap();
         assert!(saved["world"]["rules"][0].is_object());
+        assert!(saved["characters"]["legacy_master"].is_object());
+
+        let reloaded: StoryState = serde_json::from_value(saved).unwrap();
+        assert_eq!(reloaded.characters["legacy_master"].id, legacy_character.id);
+        assert_eq!(reloaded.characters["c_new"], state.characters["c_new"]);
     }
 
     #[test]
