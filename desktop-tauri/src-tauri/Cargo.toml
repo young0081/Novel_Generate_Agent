@@ -35,3 +35,6 @@ na-common = { path = "../../core/crates/na-common" }
 na-tools = { path = "../../core/crates/na-tools" }
 na-sandbox = { path = "../../core/crates/na-sandbox" }
 na-memory = { path = "../../core/crates/na-memory" }
+
+[dev-dependencies]
+tempfile = "3"

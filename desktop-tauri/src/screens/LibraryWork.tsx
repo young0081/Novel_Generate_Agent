@@ -6,6 +6,7 @@ import { useCallback, useRef, useState } from "react";
 import { Spinner } from "../components/Spinner";
 import ConfirmModal from "../components/ConfirmModal";
 import BatchActions from "../components/BatchActions";
+import RestartWorkDialog from "../components/RestartWorkDialog";
 import {
   IconPlus,
   IconBrush,
@@ -14,6 +15,7 @@ import {
   IconCheck,
   IconScroll,
   IconClose,
+  IconRefresh,
 } from "../components/icons";
 import { useToast } from "../components/Toast";
 import { useWork } from "../components/WorkContext";
@@ -51,6 +53,7 @@ export default function LibraryWork() {
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [delTarget, setDelTarget] = useState<WorkSummary | null>(null);
+  const [restartTarget, setRestartTarget] = useState<WorkSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -365,6 +368,15 @@ export default function LibraryWork() {
                     </button>
                   </div>
                 </div>
+                <button
+                  className="btn btn--ghost btn--sm work-card__restart"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setRestartTarget(w);
+                  }}
+                >
+                  <IconRefresh size={14} />保留记忆重开
+                </button>
               </div>
             </article>
           ))}
@@ -373,6 +385,15 @@ export default function LibraryWork() {
       )}
 
       {/* Create / edit drawer */}
+      {restartTarget && (
+        <RestartWorkDialog
+          key={restartTarget.id}
+          source={restartTarget}
+          onClose={() => setRestartTarget(null)}
+          onCreated={refresh}
+        />
+      )}
+
       {creating && (
         <div className="library__overlay" onClick={closeEditor}>
           <div

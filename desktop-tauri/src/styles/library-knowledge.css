@@ -148,6 +148,33 @@
 }
 
 /* a book card with a coloured spine */
+.work-card__restart {
+  margin-top: var(--sp-3);
+  align-self: flex-start;
+}
+.library__restart-description {
+  color: var(--ink-2);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.library__restart-details {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.library__restart-details > div {
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.library__restart-details dt {
+  font-weight: 600;
+  color: var(--ink);
+}
+.library__restart-details dd {
+  margin: var(--sp-1) 0 0;
+}
+
 .work-card {
   display: flex;
   background: var(--paper-hi);

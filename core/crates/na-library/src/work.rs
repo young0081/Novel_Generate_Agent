@@ -313,6 +313,56 @@ impl WorkStore {
         Ok(meta)
     }
 
+    /// Initialize an independent work from a source, publishing it only after
+    /// initialization succeeds. The callback must only write to the new work.
+    pub fn create_from<T, F>(
+        &mut self,
+        source_id: &str,
+        title: &str,
+        initialize: F,
+    ) -> Result<(WorkMeta, T)>
+    where
+        F: FnOnce(&WorkMeta, &WorkMeta) -> Result<T>,
+    {
+        validate_work_id(source_id)?;
+        if title.trim().is_empty() {
+            return Err(CoreError::invalid_input("新作品名称不能为空"));
+        }
+        let source = self
+            .get(source_id)
+            .cloned()
+            .ok_or_else(|| CoreError::invalid_input("原作品不存在，请刷新书库"))?;
+        let mut meta = WorkMeta::new_under(&self.works_root, title.trim());
+        meta.blurb = source.blurb.clone();
+        meta.genre = source.genre.clone();
+        meta.source_material = source.source_material.clone();
+        let base = self.works_root.join(&meta.id);
+        // Claim a new directory exclusively: cleanup can never remove an
+        // existing work, even if an ID collision occurs.
+        fs::create_dir(&base)?;
+        let result = (|| {
+            self.ensure_dirs(&meta)?;
+            let initialized = initialize(&source, &meta)?;
+            let mut next = self.doc.clone();
+            next.works.push(meta.clone());
+            next.active = Some(meta.id.clone());
+            self.persist_doc(&next)?;
+            self.doc = next;
+            Ok((meta, initialized))
+        })();
+        if result.is_err() {
+            if let Err(cleanup) = fs::remove_dir_all(&base) {
+                return result.map_err(|error: CoreError| {
+                    error.with_context(format!(
+                        "未完成的新作品目录清理失败 {}: {cleanup}",
+                        base.display()
+                    ))
+                });
+            }
+        }
+        result
+    }
+
     /// Switch the active work. Errors if `id` is unknown.
     pub fn set_active(&mut self, id: &str) -> Result<()> {
         if !self.doc.works.iter().any(|w| w.id == id) {
@@ -570,6 +620,78 @@ mod tests {
         assert_eq!(store2.list().len(), 2);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_from_keeps_source_and_publishes_only_initialized_work() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = WorkStore::open(root.path()).unwrap();
+        let source = store.create("原作", "简介", "修真", "原著").unwrap();
+        let other = store.create("当前作品", "", "", "").unwrap();
+        let (new_work, value) = store
+            .create_from(&source.id, " 新作 ", |old, new| {
+                assert_eq!(old, &source);
+                assert!(new.sessions_dir.is_dir());
+                fs::write(new.workspace_dir.join("outline.md"), "新作大纲")?;
+                Ok(7)
+            })
+            .unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(new_work.title, "新作");
+        assert_eq!(new_work.blurb, source.blurb);
+        assert_eq!(new_work.genre, source.genre);
+        assert_eq!(new_work.source_material, source.source_material);
+        assert_ne!(new_work.workspace_dir, source.workspace_dir);
+        assert_eq!(store.get(&source.id), Some(&source));
+        assert_eq!(store.get(&other.id), Some(&other));
+        let reopened = WorkStore::open(root.path()).unwrap();
+        assert_eq!(reopened.active_id(), Some(new_work.id.as_str()));
+        assert_eq!(reopened.list().len(), 3);
+    }
+
+    #[test]
+    fn create_from_rolls_back_copy_and_index_failures() {
+        for fail_index in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let mut store = WorkStore::open(root.path()).unwrap();
+            let source = store.create("原作", "", "", "").unwrap();
+            let before = store.list();
+            if fail_index {
+                fs::remove_file(&store.index_path).unwrap();
+                fs::create_dir(&store.index_path).unwrap();
+            }
+            let result = store.create_from(&source.id, "新作", |_, new| {
+                fs::write(new.workspace_dir.join("partial.txt"), "partial")?;
+                if fail_index {
+                    Ok(())
+                } else {
+                    Err(CoreError::invalid_input("copy failed"))
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(store.list(), before);
+            assert_eq!(store.active_id(), Some(source.id.as_str()));
+            assert_eq!(fs::read_dir(&store.works_root).unwrap().count(), 1);
+            if !fail_index {
+                assert_eq!(WorkStore::open(root.path()).unwrap().list(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn create_from_rejects_unknown_source_and_blank_title() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = WorkStore::open(root.path()).unwrap();
+        let source = store.create("原作", "", "", "").unwrap();
+        for (id, title) in [
+            ("../outside", "新作"),
+            ("missing", "新作"),
+            (source.id.as_str(), "  "),
+        ] {
+            assert!(store.create_from(id, title, |_, _| Ok(())).is_err());
+        }
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(fs::read_dir(&store.works_root).unwrap().count(), 1);
     }
 
     #[test]

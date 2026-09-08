@@ -5,6 +5,7 @@
 mod data_migration;
 mod knowledge_fill;
 mod knowledge_history;
+mod work_restart;
 
 use knowledge_fill::{normalize_text, EvidenceFetchTool, FillContract};
 
@@ -1908,6 +1909,31 @@ async fn works_create(
     Ok(meta)
 }
 
+/// Start an independent manuscript with the selected work's durable references.
+#[tauri::command]
+async fn works_restart(
+    state: State<'_, AppState>,
+    source_id: String,
+    title: String,
+) -> Result<Json, String> {
+    // Drain every active work operation before taking a consistent snapshot.
+    let _operation_lease = state.operation_gate.write().await;
+    let mut active_slot = state
+        .active
+        .write()
+        .map_err(|_| "活动作品状态锁已损坏".to_string())?;
+    let (meta, (active, report)) = state
+        .works_store()?
+        .create_from(&source_id, &title, |source, target| {
+            let report = work_restart::prepare_restart(source, target)?;
+            let active = build_active_context(target).map_err(CoreError::invalid_input)?;
+            Ok((active, report))
+        })
+        .map_err(|error| error.to_string())?;
+    *active_slot = Some(active);
+    Ok(serde_json::json!({ "work": meta, "report": report }))
+}
+
 /// Switch the active work; rebuilds the engine to its workspace.
 #[tauri::command]
 async fn works_open(state: State<'_, AppState>, id: String) -> Result<Vec<WorkSummary>, String> {
@@ -2671,6 +2697,7 @@ pub fn run() {
             works_list,
             works_current,
             works_create,
+            works_restart,
             works_open,
             works_update,
             works_delete,

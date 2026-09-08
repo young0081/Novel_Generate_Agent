@@ -64,6 +64,21 @@ export async function createWork(input: {
   });
 }
 
+/** Counts reported after a fully committed restart. */
+export interface RestartWorkResult {
+  work: WorkMeta;
+  report: {
+    memory_count: number;
+    knowledge_base_count: number;
+    story_reference_saved: boolean;
+  };
+}
+
+/** Create an independent manuscript retaining the source work's references. */
+export async function restartWork(sourceId: string, title: string): Promise<RestartWorkResult> {
+  return invoke<RestartWorkResult>("works_restart", { sourceId, title });
+}
+
 /** Switch the active work; returns the refreshed list. */
 export async function openWork(id: string): Promise<WorkSummary[]> {
   return invoke<WorkSummary[]>("works_open", { id });
