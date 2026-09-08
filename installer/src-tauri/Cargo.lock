@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "installer"
-version = "0.3.2"
+version = "0.3.5"
 dependencies = [
  "serde",
  "serde_json",

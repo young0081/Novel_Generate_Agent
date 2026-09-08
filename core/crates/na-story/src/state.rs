@@ -1,6 +1,6 @@
 //! Core data structures for story state management.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 pub type CharacterId = String;
@@ -42,10 +42,57 @@ pub struct WorldState {
     pub rules: Vec<WorldRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WorldRule {
     pub id: String,
     pub description: String,
+}
+
+/// Accept the pre-0.3 story-state format where a world rule was stored as a
+/// bare string. New saves always serialize the structured representation.
+impl<'de> Deserialize<'de> for WorldRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WorldRuleObject {
+            id: Option<String>,
+            description: Option<String>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(description) => Ok(Self {
+                id: legacy_rule_id(&description),
+                description,
+            }),
+            serde_json::Value::Object(_) => {
+                let object: WorldRuleObject =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                let description = object
+                    .description
+                    .ok_or_else(|| serde::de::Error::missing_field("description"))?;
+                Ok(Self {
+                    id: object.id.unwrap_or_else(|| legacy_rule_id(&description)),
+                    description,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "world rule must be a string or an object",
+            )),
+        }
+    }
+}
+
+fn legacy_rule_id(description: &str) -> String {
+    // Stable, dependency-free FNV-1a identifier for migrated legacy rules.
+    let mut hash = 0x811c9dc5u32;
+    for byte in description.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    format!("legacy_rule_{hash:08x}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -214,6 +261,34 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let loaded: StoryState = serde_json::from_str(&json).unwrap();
         assert_eq!(state, loaded);
+    }
+
+    #[test]
+    fn legacy_string_world_rules_are_migrated_on_load() {
+        let json = serde_json::json!({
+            "meta": {"title": "旧作品", "genre": "修真", "last_chapter": 2},
+            "world": {"rules": [
+                "天道师父会自觉兜底，但底层代码残缺频繁掉血",
+                {"id": "wr_new", "description": "灵气不足时法术会衰减"}
+            ]},
+            "characters": {},
+            "timeline": {"current_chapter": 2, "events": []},
+            "knowledge_matrix": {"entries": {}},
+            "foreshadows": [],
+            "hard_constraints": [],
+            "soft_preferences": [],
+            "current_chapter_goal": null
+        });
+        let state: StoryState = serde_json::from_value(json).unwrap();
+        assert_eq!(state.world.rules.len(), 2);
+        assert_eq!(
+            state.world.rules[0].description,
+            "天道师父会自觉兜底，但底层代码残缺频繁掉血"
+        );
+        assert!(state.world.rules[0].id.starts_with("legacy_rule_"));
+        assert_eq!(state.world.rules[1].id, "wr_new");
+        let saved = serde_json::to_value(&state).unwrap();
+        assert!(saved["world"]["rules"][0].is_object());
     }
 
     #[test]

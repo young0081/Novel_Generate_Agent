@@ -354,7 +354,7 @@ export function workflowView(phase: AgentPhase, reachedStage = 0): {
 /** The furthest macro stage supported by events received so far. */
 export function reachedWorkflowStage(steps: RunStep[]): number {
   if (steps.length === 0) return 0;
-  return steps[steps.length - 1].toolCalls.length > 0 ? 2 : 1;
+  return steps.some((step) => step.toolCalls.length > 0) ? 2 : 1;
 }
 
 // ---- tool-call presentation -------------------------------------------------
@@ -488,8 +488,6 @@ export function isProviderCompatibilityError(message: string): boolean {
     lower.includes("function calling") ||
     lower.includes("function_call") ||
     lower.includes("tools") ||
-    message.includes("返回 500") ||
-    message.includes("返回 400") ||
-    message.includes("返回 422")
+    lower.includes("functiondeclarations")
   );
 }

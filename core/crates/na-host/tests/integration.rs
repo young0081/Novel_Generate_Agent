@@ -175,7 +175,7 @@ async fn rpc_line_protocol_round_trip() {
         .await
         .unwrap();
     let v: na_common::Json = serde_json::from_str(&tools).unwrap();
-    assert_eq!(v["result"].as_array().unwrap().len(), 23);
+    assert_eq!(v["result"].as_array().unwrap().len(), 25);
 
     // write via direct-tool method, then read
     let w = handle_line(

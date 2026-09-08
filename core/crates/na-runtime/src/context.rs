@@ -243,11 +243,9 @@ impl ContextManager {
         messages.iter().map(estimate_message_tokens).sum()
     }
 
-    /// Select the most recent messages that fit [`max_tokens`](Self::max_tokens),
-    /// **always** keeping every system message regardless of budget. System
-    /// messages are emitted first (in original order), followed by the most
-    /// recent non-system messages that fit the remaining budget, in chronological
-    /// order.
+    /// Keep system instructions and the entire latest user turn, including all
+    /// tool calls and observations. Add older turns only as complete groups that
+    /// fit the soft window budget. The loop's hard token guard still applies.
     pub fn window(&self, messages: &[Message]) -> Vec<Message> {
         // 1. Always keep system messages; they cost against the budget first.
         let mut system_tokens = 0usize;
@@ -261,27 +259,36 @@ impl ContextManager {
 
         let remaining = self.max_tokens.saturating_sub(system_tokens);
 
-        // 2. Walk non-system messages from newest to oldest, keeping those that
-        //    fit the remaining budget.
-        let mut kept_rev: Vec<&Message> = Vec::new();
-        let mut used = 0usize;
-        for m in messages.iter().rev() {
-            if m.role == Role::System {
-                continue;
+        // Message-level slicing could drop a large final observation AND the
+        // user's task, or leave function responses without their matching calls.
+        let dialogue: Vec<&Message> = messages.iter().filter(|m| !m.is_system()).collect();
+        let mut starts = vec![0];
+        for (index, message) in dialogue.iter().enumerate().skip(1) {
+            if message.role == Role::User {
+                starts.push(index);
             }
-            let cost = estimate_message_tokens(m);
-            if used + cost > remaining {
+        }
+        let mut start = *starts.last().unwrap_or(&0);
+        let mut used: usize = dialogue[start..]
+            .iter()
+            .map(|m| estimate_message_tokens(m))
+            .sum();
+        for &previous in starts.iter().rev().skip(1) {
+            let cost: usize = dialogue[previous..start]
+                .iter()
+                .map(|m| estimate_message_tokens(m))
+                .sum();
+            if used.saturating_add(cost) > remaining {
                 break;
             }
             used += cost;
-            kept_rev.push(m);
+            start = previous;
         }
-        kept_rev.reverse(); // back to chronological order
 
         // 3. Reassemble: systems first (instructions), then recent dialogue.
-        let mut out = Vec::with_capacity(systems.len() + kept_rev.len());
+        let mut out = Vec::with_capacity(systems.len() + dialogue.len() - start);
         out.extend(systems.into_iter().cloned());
-        out.extend(kept_rev.into_iter().cloned());
+        out.extend(dialogue[start..].iter().map(|m| (*m).clone()));
         out
     }
 
@@ -501,6 +508,48 @@ mod tests {
         ];
         let win = mgr.window(&msgs);
         assert!(win.iter().any(|m| m.is_system()));
+        assert!(win.iter().any(|m| m.content == "hi"));
+    }
+
+    #[test]
+    fn window_retains_task_and_complete_parallel_tool_exchange() {
+        use crate::message::{ToolCallRequest, ToolResultRef};
+        let first = ToolCallRequest::new(
+            "web_fetch",
+            na_common::json!({"url": "https://example.test/a"}),
+        );
+        let second = ToolCallRequest::new(
+            "web_fetch",
+            na_common::json!({"url": "https://example.test/b"}),
+        );
+        let messages = vec![
+            Message::system("collect evidence"),
+            Message::user("older task"),
+            Message::assistant("old response".repeat(1000)),
+            Message::user("research the novel and save entries"),
+            Message::assistant_tool_call("fetch", first.clone()),
+            Message::assistant_tool_call("fetch", second.clone()),
+            Message::tool(
+                "长网页资料".repeat(3000),
+                ToolResultRef::new(first.id, "web_fetch", true, true),
+            ),
+            Message::tool(
+                "更多网页资料".repeat(3000),
+                ToolResultRef::new(second.id, "web_fetch", true, true),
+            ),
+        ];
+        let window = ContextManager::default().window(&messages);
+        assert_eq!(window.len(), 6);
+        assert_eq!(window[1].content, "research the novel and save entries");
+        assert_eq!(window.iter().filter(|m| m.tool_call.is_some()).count(), 2);
+        assert_eq!(window.iter().filter(|m| m.tool_result.is_some()).count(), 2);
+        let req =
+            crate::CompletionRequest::new(window, Vec::new(), crate::Protocol::NativeToolCall);
+        let body = crate::provider::build_gemini_body(1024, &req);
+        assert_eq!(body["contents"].as_array().unwrap().len(), 3);
+        assert_eq!(body["contents"][1]["parts"].as_array().unwrap().len(), 3);
+        assert_eq!(body["contents"][2]["parts"].as_array().unwrap().len(), 2);
+        assert_eq!(messages.len(), 8);
     }
 
     #[test]

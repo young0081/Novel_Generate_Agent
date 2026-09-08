@@ -1,5 +1,5 @@
 // SessionsDrawer — a slide-in right drawer listing all persisted sessions
-// (创作 / 探讨), allowing the user to resume or delete them.
+// (创作 / 探讨 / 策划), allowing the user to resume or delete them.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SkeletonGrid } from "./Skeleton";
@@ -26,12 +26,13 @@ import {
 } from "../lib/sessions";
 import { useDialogFocus, useLayerPresence } from "../lib/dialogLayer";
 import { runBatch } from "../lib/batch";
+import { sessionResumeTarget, type SessionResumeMode } from "../lib/sessionResume";
 
 interface SessionsDrawerProps {
   open: boolean;
   onClose: () => void;
-  /** Called when user clicks "继续创作/探讨" with (kind, sessionId) */
-  onResume: (kind: "discuss" | "studio", sessionId: string) => void;
+  /** Called when the user continues a supported session. */
+  onResume: (kind: SessionResumeMode, sessionId: string) => void;
 }
 
 export default function SessionsDrawer({ open, onClose, onResume }: SessionsDrawerProps) {
@@ -77,9 +78,9 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
 
   const resume = useCallback(
     (s: SessionSummary) => {
-      if (s.kind !== "discuss" && s.kind !== "writing") return;
-      const kind = s.kind === "discuss" ? "discuss" : "studio";
-      onResume(kind, s.id);
+      const target = sessionResumeTarget(s.kind);
+      if (!target) return;
+      onResume(target.mode, s.id);
       onClose(); // close drawer after resuming
     },
     [onResume, onClose],
@@ -162,7 +163,7 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
         <header className="drawer__head">
           <div>
             <h2 className="drawer__title">会话</h2>
-            <p className="drawer__subtitle">历次创作与探讨的存档 · 挑一个接着往下写</p>
+            <p className="drawer__subtitle">历次策划、创作与探讨的存档 · 挑一个继续</p>
           </div>
           <div className="drawer__head-actions">
             <button
@@ -223,13 +224,13 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
           ) : items.length === 0 ? (
             <EmptyState
               title="暂无会话"
-              text="到「创作」让 AI 写一段，或到「探讨」聊一聊——你们的每一次会话都会存到这里，方便日后接着写。"
+              text="到「策划」生成设定、「创作」写一段，或到「探讨」聊一聊，会话会存到这里，方便日后继续。"
             />
           ) : (
             <div className="sessions-list">
               {items.map((s) => {
                 const isDiscuss = s.kind === "discuss";
-                const canResume = isDiscuss || s.kind === "writing";
+                const target = sessionResumeTarget(s.kind);
                 return (
                   <article className={`session-card${manageMode ? " is-manage" : ""}`} key={s.id}>
                     {manageMode && (
@@ -256,14 +257,14 @@ export default function SessionsDrawer({ open, onClose, onResume }: SessionsDraw
                       {s.messages} 条 · {formatTime(s.updated_ms)}
                     </div>
                     <div className="session-card__actions">
-                      {canResume && (
+                      {target && (
                         <button
                           className="btn btn--primary btn--sm"
                           onClick={() => resume(s)}
-                          title={isDiscuss ? "继续探讨" : "继续创作"}
+                          title={target.label}
                         >
                           <IconRestore size={14} />
-                          {isDiscuss ? "继续探讨" : "继续创作"}
+                          {target.label}
                         </button>
                       )}
                       <button

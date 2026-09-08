@@ -20,8 +20,9 @@ use std::sync::{Arc, Mutex};
 
 use na_common::{json, CancellationToken, Json, Result};
 use na_runtime::{
-    register_runtime_tools, CompletionResponse, GoalLoop, LoopHookRegistry, LoopOutcome,
-    MockProvider, ModelProvider, ProjectProfile, Protocol, Session, SkillRegistry,
+    embedded_humanizer_system_message, register_runtime_tools, register_skill_tools,
+    CompletionResponse, GoalLoop, LoopHookRegistry, LoopOutcome, MockProvider, ModelProvider,
+    ProjectProfile, Protocol, Session, SkillRegistry,
 };
 use na_sandbox::{Capability, PermissionPolicy};
 use na_tools::{
@@ -53,8 +54,11 @@ impl Engine {
             .policy(default_engine_policy())
             .fetcher(Arc::new(SecureHttpFetcher::default()))
             .build()?;
+        let skills = Arc::new(SkillRegistry::with_builtins());
+        let mut registry = builtin_registry();
+        register_skill_tools(&mut registry, skills);
         Ok(Engine {
-            registry: builtin_registry(),
+            registry,
             cancellation: Mutex::new(ctx.cancel.clone()),
             operation_gate: tokio::sync::RwLock::new(()),
             ctx,
@@ -79,6 +83,11 @@ impl Engine {
             .fetcher(Arc::new(SecureHttpFetcher::default()))
             .build()?;
         let mut registry = builtin_registry();
+        let skills = if skills.is_empty() {
+            Arc::new(SkillRegistry::with_builtins())
+        } else {
+            skills
+        };
         register_runtime_tools(&mut registry, subagent_provider, skills);
         Ok(Engine {
             registry,
@@ -162,6 +171,9 @@ impl Engine {
         for msg in ProjectProfile::load(self.ctx.jail.root()).system_messages() {
             session.push(msg);
         }
+        // The humanizer is shipped with the runtime and is applied by default
+        // so every host client gets the same anti-AI style pass.
+        session.push(embedded_humanizer_system_message());
 
         let ctx = self.new_operation_context();
         let outcome = GoalLoop::with_protocol(protocol)
@@ -260,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn engine_invokes_tools() {
         let engine = Engine::new(temp_root("inv")).unwrap();
-        assert_eq!(engine.registry.len(), 23);
+        assert_eq!(engine.registry.len(), 25);
 
         let w = engine
             .invoke_tool(
@@ -297,6 +309,27 @@ mod tests {
         let json = outcome_to_json(&outcome);
         assert_eq!(json["success"], true);
         assert_eq!(json["final_answer"], "第一章写好了。");
+    }
+
+    #[tokio::test]
+    async fn run_goal_injects_embedded_humanizer() {
+        let engine = Engine::new(temp_root("humanizer")).unwrap();
+        let (_outcome, session) = engine
+            .run_goal_scripted(
+                "检查一段文字",
+                "文风检查",
+                Protocol::NativeToolCall,
+                vec![CompletionResponse::answer("已检查")],
+            )
+            .await
+            .unwrap();
+        assert!(session.history().iter().any(|message| {
+            message.is_system()
+                && message.content.starts_with("# Skill: humanizer")
+                && message
+                    .content
+                    .contains("Embedded reference: banned-words.md")
+        }));
     }
 
     #[tokio::test]

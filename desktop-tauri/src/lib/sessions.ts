@@ -8,7 +8,7 @@ import { isDesktop, NotInDesktopError } from "./core";
 import type { Session } from "./studio";
 
 /** What kind of session a record is. */
-export type SessionKind = "writing" | "discuss" | "planning" | string;
+export type SessionKind = "writing" | "discuss" | "planning" | "harness" | string;
 
 /** A lightweight summary for list views. */
 export interface SessionSummary {
@@ -61,6 +61,7 @@ export const KIND_LABEL: Record<string, string> = {
   planning: "策划",
   simulation: "推演",
   ide: "IDE 运笔",
+  harness: "Harness",
 };
 
 /** Format an epoch-millis timestamp as a compact local date-time. */

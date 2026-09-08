@@ -24,6 +24,7 @@ export type ScreenId =
   | "chapters"
   | "characters"
   | "foreshadow"
+  | "style"
   | "settings"
   | "collab"
   | "checkpoints"
@@ -45,6 +46,7 @@ export const SCREENS: ScreenDef[] = [
   { id: "chapters", label: "章节", hint: "book", icon: IconScroll },
   { id: "characters", label: "人物", hint: "character", icon: IconUser },
   { id: "foreshadow", label: "伏笔", hint: "foreshadow", icon: IconThread },
+  { id: "style", label: "文风", hint: "style", icon: IconBrush },
   { id: "settings", label: "设定", hint: "world", icon: IconMountain },
   { id: "collab", label: "协作", hint: "version", icon: IconBranch },
   { id: "checkpoints", label: "快照", hint: "snapshot", icon: IconClock },

@@ -150,7 +150,9 @@ export async function fillFromTopic(
   topic: string,
   onStep?: (step: AgentStep) => void,
   requestId?: string,
-): Promise<{ added: number; outcome: LiveRun["outcome"]; session: LiveRun["session"] }> {
+  sessionId?: string,
+  followUp?: string,
+): Promise<import("./knowledgeFillResult").KnowledgeFillSummary & { outcome: LiveRun["outcome"]; session: LiveRun["session"] }> {
   const activeRequestId = requestId ?? newRequestId("knowledge");
   const un = onStep
     ? await listen<AgentStep>("agent-step", (event) => {
@@ -160,14 +162,53 @@ export async function fillFromTopic(
   try {
     return await invoke<{
       added: number;
+      status: "completed" | "partial" | "failed" | "cancelled";
+      error?: string | null;
+      sources: number;
       outcome: LiveRun["outcome"];
       session: LiveRun["session"];
     }>("knowledge_fill_web", {
       kbId,
       topic,
       requestId: activeRequestId,
+      sessionId: sessionId ?? null,
+      followUp: followUp ?? null,
     });
   } finally {
     un?.();
   }
+}
+
+export interface CollectionRun {
+  started_ms: number;
+  finished_ms: number | null;
+  status: string;
+  added: number;
+  sources: number;
+  steps: number;
+  stopped_reason: string;
+  error: string | null;
+  follow_up: string;
+}
+
+export interface CollectionHistory {
+  id: string;
+  kb_id: string;
+  topic: string;
+  created_ms: number;
+  updated_ms: number;
+  runs: CollectionRun[];
+}
+
+export interface CollectionRecord {
+  history: CollectionHistory;
+  session: LiveRun["session"];
+}
+
+export function listCollections(kbId: string): Promise<CollectionHistory[]> {
+  return invoke("knowledge_collection_list", { kbId });
+}
+
+export function getCollection(kbId: string, id: string): Promise<CollectionRecord> {
+  return invoke("knowledge_collection_get", { kbId, id });
 }

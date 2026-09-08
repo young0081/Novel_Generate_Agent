@@ -115,7 +115,13 @@ export type AgentStep = (
     }
 ) & { request_id?: string };
 
-export type LiveSessionKind = "writing" | "planning" | "simulation" | "ide" | "discuss";
+export type LiveSessionKind =
+  | "writing"
+  | "planning"
+  | "simulation"
+  | "ide"
+  | "discuss"
+  | "harness";
 
 export type ThinkingLevel = "light" | "balanced" | "deep";
 

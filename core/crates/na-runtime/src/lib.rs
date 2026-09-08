@@ -87,6 +87,7 @@ pub mod scheduler;
 pub mod session;
 pub mod session_store;
 pub mod skills;
+pub mod style;
 pub mod subagent;
 
 // ---- Messages & session ----
@@ -122,7 +123,9 @@ pub use injection::{InjectionHit, PromptInjectionGuard, Severity};
 pub use scheduler::ToolScheduler;
 
 // ---- The agent loop ----
-pub use agent_loop::{loop_guard_error, GoalLoop, LoopGuard, LoopOutcome, StoppedReason};
+pub use agent_loop::{
+    loop_guard_error, CompletionCheck, GoalLoop, LoopGuard, LoopOutcome, StoppedReason,
+};
 
 // ---- Loop / model observability hooks ----
 pub use loop_hooks::{
@@ -130,7 +133,11 @@ pub use loop_hooks::{
 };
 
 // ---- Reusable skills (playbooks) ----
-pub use skills::{skill_system_message, Skill, SkillListTool, SkillLoadTool, SkillRegistry};
+pub use skills::{
+    embedded_humanizer_system_message, skill_system_message, Skill, SkillListTool, SkillLoadTool,
+    SkillRegistry,
+};
+pub use style::StyleProfile;
 
 // ---- Subagents (bounded delegated runs) ----
 pub use subagent::{SubagentTool, DEFAULT_SUBAGENT_MAX_STEPS};
@@ -183,9 +190,7 @@ pub fn register_runtime_tools(
     provider: Arc<dyn ModelProvider>,
     skills: Arc<SkillRegistry>,
 ) {
-    // Skill tools first.
-    registry.register_or_replace(Arc::new(SkillListTool::new(skills.clone())));
-    registry.register_or_replace(Arc::new(SkillLoadTool::new(skills)));
+    register_skill_tools(registry, skills.clone());
 
     // Snapshot the registry (base + skill tools) for the subagent's children,
     // then add the subagent tool. The snapshot intentionally excludes the
@@ -193,6 +198,13 @@ pub fn register_runtime_tools(
     // through the same shared `Arc` (children get a focused, finite toolset).
     let child_registry = Arc::new(registry.clone());
     registry.register_or_replace(Arc::new(SubagentTool::new(provider, child_registry)));
+}
+
+/// Register only the read-only skill tools. This is useful for hosts that do
+/// not have a model provider available at engine construction time.
+pub fn register_skill_tools(registry: &mut na_tools::ToolRegistry, skills: Arc<SkillRegistry>) {
+    registry.register_or_replace(Arc::new(SkillListTool::new(skills.clone())));
+    registry.register_or_replace(Arc::new(SkillLoadTool::new(skills)));
 }
 
 /// A boxed, `Send` future with an explicit lifetime — the object-safe stand-in

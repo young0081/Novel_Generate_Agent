@@ -172,7 +172,7 @@ export default function App() {
         setDir(d.path);
       } catch {
         if (!alive) return;
-        setVersion((p) => p || "0.3.2");
+        setVersion((p) => p || "0.3.5");
         setDetect({ installed: false, path: "", version: null });
       }
     })();

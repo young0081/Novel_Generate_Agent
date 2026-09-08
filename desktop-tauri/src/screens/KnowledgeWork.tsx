@@ -8,6 +8,7 @@ import AgentFeed from "../components/agent/AgentFeed";
 import WorkStatus from "../components/agent/WorkStatus";
 import ConfirmModal from "../components/ConfirmModal";
 import BatchActions from "../components/BatchActions";
+import KnowledgeHistory from "../components/KnowledgeHistory";
 import {
   IconPlus,
   IconTrash,
@@ -37,6 +38,7 @@ import {
   type KnowledgeEntry,
   type KnowledgeHit,
   type KnowledgeKind,
+  type CollectionRecord,
 } from "../lib/knowledge";
 import { cancel, describeError, isDesktop, newRequestId } from "../lib/core";
 import {
@@ -50,6 +52,7 @@ import type { AgentStep } from "../lib/studio";
 import { useDialogFocus } from "../lib/dialogLayer";
 import { scrollLiveAnchor } from "../lib/liveScroll";
 import { runBatch } from "../lib/batch";
+import { describeKnowledgeFill } from "../lib/knowledgeFillResult";
 
 const KIND_OPTIONS: KnowledgeKind[] = [
   "character",
@@ -63,6 +66,11 @@ const KIND_OPTIONS: KnowledgeKind[] = [
 ];
 
 export default function KnowledgeWork() {
+  const { current } = useWork();
+  return <KnowledgeWorkspace key={current?.id ?? "none"} />;
+}
+
+function KnowledgeWorkspace() {
   const toast = useToast();
   const { current } = useWork();
 
@@ -105,6 +113,10 @@ export default function KnowledgeWork() {
   // auto-fill
   const [showFill, setShowFill] = useState(false);
   const [fillTopic, setFillTopic] = useState("");
+  const [fillSessionId, setFillSessionId] = useState<string | null>(null);
+  const [fillFollowUp, setFillFollowUp] = useState("");
+  const [fillHistory, setFillHistory] = useState<CollectionRecord | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [filling, setFilling] = useState(false);
   const [fillCancelling, setFillCancelling] = useState(false);
   const [fillSteps, setFillSteps] = useState<RunStep[]>([]);
@@ -116,11 +128,6 @@ export default function KnowledgeWork() {
   const fillStepSeqRef = useRef(0);
   const fillPendingDeltaRef = useRef<AgentStep | null>(null);
   const fillRafRef = useRef<number | null>(null);
-  const fillTerminalEventRef = useRef<{
-    success: boolean;
-    reason: string;
-    steps: number;
-  } | null>(null);
   const fillRequestRef = useRef<string | null>(null);
   const fillCancelRequestedRef = useRef(false);
 
@@ -338,7 +345,6 @@ export default function KnowledgeWork() {
       fillRafRef.current = null;
     }
     fillPendingDeltaRef.current = null;
-    fillTerminalEventRef.current = null;
     fillStepSeqRef.current = 0;
     setFillSteps([]);
     setFillFinished(false);
@@ -354,22 +360,8 @@ export default function KnowledgeWork() {
     ));
     if (step.phase !== "finish") return;
 
-    fillTerminalEventRef.current = {
-      success: step.success,
-      reason: step.reason,
-      steps: step.steps,
-    };
-    const stopped = step.reason === "cancelled" || fillCancelRequestedRef.current;
-    setFillFinished(true);
-    setFillSuccess(stopped ? false : step.success);
-    setFillCancelled(stopped);
-    setFillFinishNote(
-      stopped
-        ? "已由用户停止"
-        : step.success
-          ? `整理完成（共 ${step.steps} 步）`
-          : `${stopReasonLabel(step.reason)}（共 ${step.steps} 步）`,
-    );
+    // The command validates durable entries after the loop finishes.
+    // A model's finish event alone is not a successful collection.
   }, []);
 
   const flushFillDelta = useCallback(() => {
@@ -404,7 +396,7 @@ export default function KnowledgeWork() {
   }, [flushFillDelta, flushFillDeltaImmediately, handleFillStepNow]);
 
   const onFill = useCallback(async () => {
-    if (!activeKb || !fillTopic.trim() || filling) return;
+    if (!activeKb || !fillTopic.trim() || filling || fillRequestRef.current) return;
     resetFillRun();
     setFilling(true);
     setFillCancelling(false);
@@ -412,9 +404,13 @@ export default function KnowledgeWork() {
     const requestId = newRequestId("knowledge");
     fillRequestRef.current = requestId;
     try {
-      const result = await fillFromTopic(activeKb, fillTopic.trim(), handleFillStep, requestId);
+      const result = await fillFromTopic(activeKb, fillTopic.trim(), handleFillStep, requestId, fillSessionId ?? undefined, fillFollowUp);
+      setFillSessionId(result.session.id);
+      setFillFollowUp("");
+      setFillHistory(null);
       flushFillDeltaImmediately();
-      const { added, outcome } = result;
+      const { outcome } = result;
+      const summary = describeKnowledgeFill(result);
       const stoppedReason = outcome.stopped_reason;
       const stopped = stoppedReason === "cancelled";
       if (outcome.warning) toast.info(outcome.warning);
@@ -423,25 +419,24 @@ export default function KnowledgeWork() {
         setFillFinished(true);
         setFillSuccess(false);
         setFillCancelled(true);
-        setFillFinishNote("已由用户停止");
+        setFillFinishNote(summary.note);
         toast.info("已停止填充");
-      } else if (stoppedReason !== "goal_reached") {
+      } else if (!summary.success) {
         setFillSteps((steps) => settlePendingTools(steps, "error", stopReasonLabel(stoppedReason)));
         setFillFinished(true);
         setFillSuccess(false);
         setFillCancelled(false);
-        setFillFinishNote(`${stopReasonLabel(stoppedReason)}（共 ${outcome.steps} 步）`);
-        toast.info("本次填充未完整完成，可调整题材后重试");
+        setFillFinishNote(summary.note);
+        setFillError(summary.error || (stoppedReason !== "goal_reached" ? stopReasonLabel(stoppedReason) : null));
+        toast.info(summary.note);
       } else {
         setFillSteps((steps) => settlePendingTools(steps, "success"));
         setFillFinished(true);
         setFillSuccess(true);
         setFillCancelled(false);
-        setFillFinishNote(`填充完成，已写入 ${added} 条设定资料`);
-        toast.ok(`已填充 ${added} 条设定资料`);
+        setFillFinishNote(summary.note);
+        toast.ok(summary.note);
       }
-      await loadEntries(activeKb);
-      await loadBases();
     } catch (e) {
       flushFillDeltaImmediately();
       const stopped = fillCancelRequestedRef.current;
@@ -464,6 +459,10 @@ export default function KnowledgeWork() {
         toast.err(message);
       }
     } finally {
+      // A transport error can arrive after successful writes; reload those too.
+      await loadEntries(activeKb);
+      await loadBases();
+      setHistoryRevision((n) => n + 1);
       if (fillRequestRef.current === requestId) fillRequestRef.current = null;
       setFilling(false);
       setFillCancelling(false);
@@ -471,6 +470,8 @@ export default function KnowledgeWork() {
   }, [
     activeKb,
     fillTopic,
+    fillSessionId,
+    fillFollowUp,
     filling,
     flushFillDeltaImmediately,
     handleFillStep,
@@ -737,6 +738,10 @@ export default function KnowledgeWork() {
                   className="btn btn--ghost btn--sm"
                   onClick={() => {
                     resetFillRun();
+                    setFillSessionId(null);
+                    setFillFollowUp("");
+                    setFillHistory(null);
+                    setFillTopic(current?.source_material || "");
                     setShowFill(true);
                   }}
                 >
@@ -760,6 +765,22 @@ export default function KnowledgeWork() {
                 </button>
               </div>
             </header>
+
+            <KnowledgeHistory
+              key={`${current?.id}:${activeKb}`}
+              kbId={currentBase.id}
+              revision={historyRevision}
+              busy={filling}
+              onResume={(record) => {
+                if (record.history.kb_id !== activeKb) return;
+                resetFillRun();
+                setFillSessionId(record.history.id);
+                setFillTopic(record.history.topic);
+                setFillFollowUp("");
+                setFillHistory(record);
+                setShowFill(true);
+              }}
+            />
 
             {/* RAG search */}
             <div className="kb__search">
@@ -1005,7 +1026,7 @@ export default function KnowledgeWork() {
             tabIndex={-1}
           >
             <header className="library__sheet-head">
-              <h3>联网填充设定资料</h3>
+              <h3>{fillSessionId ? "继续历史采集" : "联网填充设定资料"}</h3>
               <button
                 className="icon-btn"
                 onClick={closeFill}
@@ -1022,10 +1043,19 @@ export default function KnowledgeWork() {
                   value={fillTopic}
                   onChange={(e) => setFillTopic(e.target.value)}
                   placeholder={current?.source_material || "例如：斗破苍穹"}
-                  disabled={filling}
+                  disabled={filling || !!fillSessionId}
                   data-autofocus
                 />
               </label>
+              {fillSessionId && <>
+                <p className="library__hint">沿用原采集会话，补齐未完成资料；已入库条目会跳过重复保存。</p>
+                <label className="field"><span className="field__label">本轮补充要求（可选）</span>
+                  <textarea className="field__input field__textarea" value={fillFollowUp} onChange={(e) => setFillFollowUp(e.target.value)} disabled={filling} maxLength={4000} rows={3} placeholder="例如：接着补齐重要地点，优先查阅官方资料。" />
+                </label>
+              </>}
+              {fillHistory && <details className="kb-history__detail"><summary>此前采集记录 · {fillHistory.history.runs.length} 轮</summary>
+                <div className="kb-history__transcript">{fillHistory.session.messages.filter((m) => m.role !== "system").map((m, i) => <div key={i} className="msg"><strong>{m.role === "user" ? "采集要求" : m.role === "tool" ? "工具结果" : "采集过程"}</strong><pre>{m.content || JSON.stringify(m.tool_call?.args, null, 2)}</pre></div>)}</div>
+              </details>}
               <p className="library__hint">
                 <IconBrush size={13} />
                 AI 将整理该作品的核心人物、世界规则、地点、事件与术语，自动写入当前知识库。
@@ -1061,7 +1091,7 @@ export default function KnowledgeWork() {
                       ) : (
                         <IconStop size={14} />
                       )}
-                      <span>{fillError ? `填充失败：${fillError}` : fillFinishNote}</span>
+                      <span>{[fillFinishNote, fillError].filter(Boolean).join("；")}</span>
                     </div>
                   )}
                 </div>
@@ -1085,7 +1115,7 @@ export default function KnowledgeWork() {
                 ) : (
                   <IconProviders size={16} />
                 )}
-                {fillCancelling ? "停止中…" : filling ? "停止" : "开始填充"}
+                {fillCancelling ? "停止中…" : filling ? "停止" : fillSessionId ? "继续采集" : "开始填充"}
               </button>
             </footer>
           </div>

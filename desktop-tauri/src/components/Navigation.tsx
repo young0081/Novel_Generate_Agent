@@ -14,17 +14,21 @@ import {
   IconSettings,
   IconBranch,
   IconClock,
+  IconStar,
+  IconTools,
 } from "./icons";
 
 type WorkMode =
   | "library"
   | "planning"
+  | "harness"
   | "discuss"
   | "simulate"
   | "studio"
   | "ide"
   | "revision"
   | "knowledge"
+  | "style"
   | "collab"
   | "checkpoints";
 
@@ -44,19 +48,21 @@ const NAV_ITEMS: Array<{
 }> = [
   { id: "library", label: "书库", Icon: IconArchive },
   { id: "planning", label: "策划", Icon: IconCompass },
+  { id: "harness", label: "Harness", Icon: IconTools },
   { id: "discuss", label: "探讨", Icon: IconChat },
   { id: "simulate", label: "推演", Icon: IconSimulate },
   { id: "studio", label: "创作", Icon: IconBrush },
   { id: "ide", label: "编辑", Icon: IconPencil },
   { id: "revision", label: "修订", Icon: IconScroll },
   { id: "knowledge", label: "知识库", Icon: IconSeed },
+  { id: "style", label: "文风", Icon: IconStar },
   { id: "collab", label: "协作", Icon: IconBranch },
   { id: "checkpoints", label: "快照", Icon: IconClock },
 ];
 
 const NAV_GROUPS = [
-  { label: "创作工作区", items: NAV_ITEMS.slice(0, 8) },
-  { label: "项目与版本", items: NAV_ITEMS.slice(8) },
+  { label: "创作工作区", items: NAV_ITEMS.slice(0, 10) },
+  { label: "项目与版本", items: NAV_ITEMS.slice(10) },
 ] as const;
 
 export default function Navigation({

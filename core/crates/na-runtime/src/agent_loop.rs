@@ -223,6 +223,12 @@ fn fingerprint(calls: &[ToolCallRequest]) -> String {
     parts.join("|")
 }
 
+/// Optional domain-specific validation of a claimed final answer.
+pub trait CompletionCheck: std::fmt::Debug + Send + Sync {
+    /// Return corrective instructions when a claimed final answer lacks durable results.
+    fn unmet_requirement(&self, session: &Session) -> Option<String>;
+}
+
 /// The configurable goal-directed agent loop.
 #[derive(Debug, Clone)]
 pub struct GoalLoop {
@@ -245,6 +251,9 @@ pub struct GoalLoop {
     /// Optional observability hooks fired around each step and at finish. An
     /// empty registry (the default) leaves loop behavior byte-for-byte unchanged.
     pub loop_hooks: Arc<LoopHookRegistry>,
+    pub completion_check: Option<Arc<dyn CompletionCheck>>,
+    /// Writing-only safeguard. Other tasks may return detailed summaries.
+    pub require_file_for_long_answer: bool,
 }
 
 impl Default for GoalLoop {
@@ -258,11 +267,23 @@ impl Default for GoalLoop {
             orchestrator: Orchestrator::default(),
             compress: false,
             loop_hooks: Arc::new(LoopHookRegistry::new()),
+            completion_check: None,
+            require_file_for_long_answer: false,
         }
     }
 }
 
 impl GoalLoop {
+    pub fn require_file_for_long_answer(mut self, required: bool) -> Self {
+        self.require_file_for_long_answer = required;
+        self
+    }
+
+    pub fn completion_check(mut self, check: Arc<dyn CompletionCheck>) -> Self {
+        self.completion_check = Some(check);
+        self
+    }
+
     /// A loop configured for a given protocol with default guards.
     pub fn with_protocol(protocol: Protocol) -> Self {
         GoalLoop {
@@ -375,6 +396,7 @@ impl GoalLoop {
         let injection = PromptInjectionGuard::default();
 
         let mut final_answer: Option<String> = None;
+        let mut wrote_file = false;
         let stopped_reason = loop {
             // 0. Honor cancellation at the step boundary.
             if ctx.cancel.is_cancelled() {
@@ -454,6 +476,23 @@ impl GoalLoop {
 
             match action {
                 AgentAction::Final { answer } => {
+                    if let Some(requirement) = self
+                        .completion_check
+                        .as_ref()
+                        .and_then(|check| check.unmet_requirement(session))
+                    {
+                        session.push(Message::assistant(answer));
+                        // Keep the task and evidence in the same user turn.
+                        session.messages.retain(|message| {
+                            !(message.is_system()
+                                && message.content.starts_with("[completion check] "))
+                        });
+                        session.push(Message::system(format!("[completion check] {requirement}")));
+                        if let Err(reason) = guard.register_progress(false) {
+                            break reason;
+                        }
+                        continue;
+                    }
                     // A genuine final answer reaches the goal. An empty answer is
                     // treated as the model stopping without a result.
                     if answer.trim().is_empty() {
@@ -462,7 +501,11 @@ impl GoalLoop {
                     }
                     // Guard: reject Final Answer with long content (likely章节/article).
                     // The model must use write_file to save long-form content.
-                    if answer.len() > 800 {
+                    if self.require_file_for_long_answer
+                        && !wrote_file
+                        && answer.chars().count() > 800
+                        && registry.contains("write_file")
+                    {
                         session.push(Message::assistant(format!(
                             "{answer}\n\n[loop guard] Final Answer contains long content ({}字). \
                              You MUST use write_file tool to save章节/articles, not output them directly. \
@@ -548,6 +591,7 @@ impl GoalLoop {
                         }
                         if result.ok {
                             any_ok = true;
+                            wrote_file |= matches!(call.name.as_str(), "write_file" | "edit_file");
                         }
 
                         let untrusted = result.metadata.untrusted;
@@ -633,6 +677,70 @@ mod tests {
     }
 
     /// A trivial read-only tool that succeeds and echoes.
+    #[tokio::test]
+    async fn planning_accepts_long_chinese_completion_with_file_tools_available() {
+        let root = temp_root("planning_summary");
+        let ctx = ToolContextBuilder::new(&root).build().unwrap();
+        let registry = na_tools::builtin_registry();
+        let answer = "已完成设定并保存。".repeat(180);
+        let model = MockProvider::from_responses(vec![CompletionResponse::react(&answer)]);
+        let mut session = Session::new("planning");
+        let result = GoalLoop::default()
+            .run("完成人物设定", &mut session, &model, &registry, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.stopped_reason, StoppedReason::GoalReached);
+        assert_eq!(result.steps, 1);
+        assert_eq!(result.final_answer.as_deref(), Some(answer.as_str()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn writing_guard_counts_characters_and_allows_summary_after_save() {
+        let root = temp_root("writing_summary");
+        let ctx = ToolContextBuilder::new(&root).build().unwrap();
+        let registry = na_tools::builtin_registry();
+        let short = "设".repeat(386);
+        let model = MockProvider::from_responses(vec![CompletionResponse::react(&short)]);
+        let mut session = Session::new("writing");
+        let run = GoalLoop::default().require_file_for_long_answer(true);
+        let result = run
+            .run("总结", &mut session, &model, &registry, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.stopped_reason, StoppedReason::GoalReached);
+
+        let long = "正文".repeat(500);
+        let model = MockProvider::from_responses(vec![
+            CompletionResponse::react(&long),
+            CompletionResponse::tool_call(ToolCallRequest::new(
+                "write_file",
+                json!({"path":"chapter.md", "content":long}),
+            )),
+            CompletionResponse::react(&long),
+        ]);
+        let mut session = Session::new("writing");
+        let result = run
+            .run("写入章节", &mut session, &model, &registry, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.stopped_reason, StoppedReason::GoalReached);
+        assert_eq!(result.steps, 3);
+        assert_eq!(
+            std::fs::read_to_string(root.join("chapter.md")).unwrap(),
+            long
+        );
+        assert_eq!(
+            session
+                .history()
+                .iter()
+                .filter(|m| m.content.contains("[loop guard]"))
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     struct NoteTool;
     impl Tool for NoteTool {
         fn spec(&self) -> ToolSpec {

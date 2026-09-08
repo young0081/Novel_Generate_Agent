@@ -146,7 +146,7 @@ fn provider_status_message(
     req: &CompletionRequest,
 ) -> String {
     let mut msg = format!("供应商 {provider} 返回 {status}: {}", truncate(body, 400));
-    if uses_native_tools(req) {
+    if uses_native_tools(req) && is_tool_compatibility_error(&CoreError::model(msg.clone())) {
         msg.push_str(
             "。该模型可能不支持原生工具调用；自动兼容模式会尝试回退到文本工具，也可以在“供应商”中明确选择“文本工具”。",
         );
@@ -2111,6 +2111,7 @@ impl HttpModelProvider {
     }
 
     async fn complete_once(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        validate_generation_messages(&request)?;
         let response = match self.config.protocol {
             ProviderProtocol::OpenAi => self.call_openai(request.clone()).await,
             ProviderProtocol::Anthropic => self.call_anthropic(request.clone()).await,
@@ -2131,6 +2132,7 @@ impl HttpModelProvider {
         request: CompletionRequest,
         on_delta: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<CompletionResponse> {
+        validate_generation_messages(&request)?;
         let response = match self.config.protocol {
             ProviderProtocol::OpenAi => self.call_openai_stream(request.clone(), on_delta).await,
             ProviderProtocol::Anthropic => {
@@ -2178,6 +2180,20 @@ fn adapt_react_fallback(response: CompletionResponse) -> CompletionResponse {
 
 /// Returns true for transient network errors worth retrying (connection refused,
 /// timeout, DNS failure). API-level errors (4xx/5xx) are not transient.
+fn validate_generation_messages(request: &CompletionRequest) -> Result<()> {
+    if !request.messages.iter().any(|message| {
+        !message.is_system()
+            && (!message.content.trim().is_empty()
+                || message.tool_call.is_some()
+                || message.tool_result.is_some())
+    }) {
+        return Err(CoreError::invalid_input(
+            "模型请求缺少用户任务或会话内容（contents 为空），未发送请求；请重新输入任务。",
+        ));
+    }
+    Ok(())
+}
+
 fn is_transient(e: &na_common::CoreError) -> bool {
     let msg = e.to_string().to_lowercase();
     msg.contains("error sending request")
@@ -3426,8 +3442,8 @@ mod tests {
     fn native_tool_http_error_mentions_compatibility_mode() {
         let msg = provider_status_message(
             "P",
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bad_response_status_code",
+            StatusCode::BAD_REQUEST,
+            "function calling is not supported",
             &sample_req(Protocol::NativeToolCall),
         );
         assert!(msg.contains("文本工具"));
@@ -3439,6 +3455,79 @@ mod tests {
             &sample_req(Protocol::ReActText),
         );
         assert!(!plain.contains("文本工具"));
+        let missing = provider_status_message(
+            "Q4-Gemini",
+            StatusCode::BAD_REQUEST,
+            "contents is required",
+            &sample_req(Protocol::NativeToolCall),
+        );
+        assert!(!missing.contains("文本工具"));
+        assert!(!is_tool_compatibility_error(&CoreError::model(missing)));
+    }
+
+    #[test]
+    fn generation_requires_real_dialogue() {
+        let mut request = sample_req(Protocol::NativeToolCall);
+        request.messages = vec![Message::system("system only")];
+        assert!(validate_generation_messages(&request).is_err());
+        request.messages.push(Message::user("research this novel"));
+        assert!(validate_generation_messages(&request).is_ok());
+    }
+
+    #[tokio::test]
+    async fn gemini_http_keeps_contents_when_latest_task_exceeds_window() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        for protocol in [Protocol::NativeToolCall, Protocol::ReActText] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with("POST /v1beta/models/m1:generateContent "));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                }
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                let body: Json = serde_json::from_slice(&bytes).unwrap();
+                assert!(!body["contents"].as_array().unwrap().is_empty());
+                assert!(body["contents"][0]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("研究作品"));
+                let response = json!({"candidates": [{"content": {"role":"model", "parts":[{"text":"ok"}]}, "finishReason":"STOP"}]}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            });
+            let mut config = cfg("local-gemini");
+            config.protocol = ProviderProtocol::Gemini;
+            config.base_url = format!("http://{address}");
+            let provider = HttpModelProvider::new(config, "m1").unwrap();
+            let messages = crate::ContextManager::default().window(&[Message::user(format!(
+                "研究作品{}",
+                "长篇作品资料".repeat(2000)
+            ))]);
+            let response = provider
+                .complete(CompletionRequest::new(messages, Vec::new(), protocol))
+                .await
+                .unwrap();
+            assert_eq!(response.text, "ok");
+            server.join().unwrap();
+        }
     }
 
     #[test]

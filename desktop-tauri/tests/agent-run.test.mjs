@@ -43,7 +43,26 @@ const {
   settlePendingTools,
   upsertStep,
   workflowView,
+  isProviderCompatibilityError,
+  reachedWorkflowStage,
 } = await import(moduleUrl);
+
+test("workflow retains the reached tool stage after a final text or budget stop", () => {
+  const steps = [
+    { step: 4, toolCalls: [{ name: "memory_save", status: "success" }] },
+    { step: 9, toolCalls: [] },
+  ];
+  assert.equal(reachedWorkflowStage(steps), 2);
+  assert.deepEqual(workflowView("stopped", reachedWorkflowStage(steps)), { current: 2, state: "stopped" });
+  assert.equal(reachedWorkflowStage([]), 0);
+  assert.equal(reachedWorkflowStage([{ toolCalls: [] }]), 1);
+});
+
+test("missing Gemini contents and auth errors are not tool compatibility failures", () => {
+  assert.equal(isProviderCompatibilityError('供应商 Q4-Gemini 返回 400 Bad Request: {"error":{"message":"contents is required"}}'), false);
+  assert.equal(isProviderCompatibilityError("供应商返回 400 invalid api key"), false);
+  assert.equal(isProviderCompatibilityError("400 function calling not supported"), true);
+});
 
 test("discussion workflow uses the native Agent stages", () => {
   assert.deepEqual(

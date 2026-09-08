@@ -5,7 +5,9 @@
 //! * a **style guide** (`writer.md`) — the author's voice, tone, POV rules,
 //!   formatting conventions, things to avoid; and
 //! * an **outline** (`outline.md`) — the plan / structure the prose should
-//!   follow.
+//!   follow; and
+//! * an active structured [`StyleProfile`] (`.na/active_style.json`) — rules
+//!   distilled from reference prose and applied consistently across the book.
 //!
 //! [`ProjectProfile::load`] reads whichever of these exist (checking the project
 //! root and a `.na/` subfolder), and [`system_messages`](ProjectProfile::system_messages)
@@ -16,6 +18,7 @@
 use std::path::Path;
 
 use crate::message::Message;
+use crate::style::StyleProfile;
 
 /// The loaded steering documents for a project.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,6 +27,8 @@ pub struct ProjectProfile {
     pub writer_md: Option<String>,
     /// Contents of the outline (`outline.md`), if present.
     pub outline_md: Option<String>,
+    /// The active structured style profile for this work, if selected.
+    pub style_profile: Option<StyleProfile>,
 }
 
 /// Read a file to a trimmed, non-empty string, returning `None` when the file is
@@ -56,6 +61,7 @@ impl ProjectProfile {
         ProjectProfile {
             writer_md,
             outline_md,
+            style_profile: None,
         }
     }
 
@@ -67,12 +73,13 @@ impl ProjectProfile {
         ProjectProfile {
             writer_md: find_doc(root, "writer.md"),
             outline_md: find_doc(root, "outline.md"),
+            style_profile: find_active_style(root),
         }
     }
 
     /// Whether the profile carries no steering content.
     pub fn is_empty(&self) -> bool {
-        self.writer_md.is_none() && self.outline_md.is_none()
+        self.writer_md.is_none() && self.outline_md.is_none() && self.style_profile.is_none()
     }
 
     /// Produce the [`System`](Message::system) messages that inject the loaded
@@ -85,6 +92,9 @@ impl ProjectProfile {
             out.push(Message::system(format!(
                 "# 作者风格指南 (writer.md)\n严格遵循以下写作风格与约定：\n\n{writer}"
             )));
+        }
+        if let Some(style) = &self.style_profile {
+            out.push(Message::system(style.system_prompt()));
         }
         if let Some(outline) = &self.outline_md {
             out.push(Message::system(format!(
@@ -130,6 +140,15 @@ impl ProjectProfile {
         let section = lines[start..end].join("\n").trim().to_string();
         (!section.is_empty()).then_some(section)
     }
+}
+
+fn find_active_style(jail_root: &Path) -> Option<StyleProfile> {
+    let raw = read_optional(&jail_root.join(".na").join("active_style.json"))?;
+    serde_json::from_str(&raw)
+        .ok()
+        .filter(|profile: &StyleProfile| {
+            !profile.id.trim().is_empty() && !profile.name.trim().is_empty()
+        })
 }
 
 fn heading_contains_chapter(heading: &str, chapter: u32) -> bool {
@@ -337,6 +356,30 @@ mod tests {
         let p = ProjectProfile::new(Some("w".into()), None);
         assert!(!p.is_empty());
         assert_eq!(p.system_messages().len(), 1);
+    }
+
+    #[test]
+    fn load_active_style_profile_and_inject_prompt() {
+        let dir = temp_dir("active-style");
+        std::fs::create_dir_all(dir.join(".na")).unwrap();
+        std::fs::write(
+            dir.join(".na").join("active_style.json"),
+            serde_json::json!({
+                "id": "ink",
+                "name": "冷峻白描",
+                "tone": "克制",
+                "humanizer_rules": ["删掉空泛升华"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let profile = ProjectProfile::load(&dir);
+        assert_eq!(profile.style_profile.as_ref().unwrap().name, "冷峻白描");
+        assert!(profile
+            .system_messages()
+            .iter()
+            .any(|message| message.content.contains("删掉空泛升华")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

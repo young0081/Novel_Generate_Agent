@@ -419,7 +419,7 @@ export default function ProvidersScreen() {
   // ---- pick active provider+model ----
   const applyActive = useCallback(
     async (providerId: string, model: string) => {
-      if (!model) return;
+      if (!model || applyingId !== null) return;
       setApplyingId(providerId);
       try {
         const next = await setActiveProvider(providerId, model);
@@ -431,7 +431,7 @@ export default function ProvidersScreen() {
         setApplyingId(null);
       }
     },
-    [toast],
+    [applyingId, toast],
   );
 
   // the model chosen in the drawer for testing (defaults to default/first)
@@ -689,7 +689,7 @@ export default function ProvidersScreen() {
                     <select
                       className="select"
                       value={pickValue}
-                      disabled={p.models.length === 0 || applyingId === p.id}
+                      disabled={p.models.length === 0 || applyingId !== null}
                       onChange={(e) => void applyActive(p.id, e.target.value)}
                       aria-label={`为 ${p.name} 选择当前模型`}
                     >
@@ -711,7 +711,15 @@ export default function ProvidersScreen() {
                         当前
                       </span>
                     ) : (
-                      <span className="prov-card__hint">点选启用</span>
+                      <button
+                        type="button"
+                        className="btn btn--sm"
+                        disabled={!pickValue || applyingId !== null}
+                        onClick={() => void applyActive(p.id, pickValue)}
+                        aria-label={`启用 ${p.name} 的 ${pickValue || "模型"}`}
+                      >
+                        <IconCheck size={14} /> 启用
+                      </button>
                     )}
                   </div>
 

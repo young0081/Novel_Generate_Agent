@@ -228,7 +228,7 @@ mod tests {
     async fn list_tools_returns_all() {
         let e = engine("list");
         let out = dispatch(&e, "list_tools", Json::Null).await.unwrap();
-        assert_eq!(out.as_array().unwrap().len(), 23);
+        assert_eq!(out.as_array().unwrap().len(), 25);
     }
 
     #[tokio::test]

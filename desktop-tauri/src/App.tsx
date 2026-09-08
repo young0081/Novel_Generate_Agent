@@ -15,40 +15,47 @@ import {
   flushPendingEditors,
 } from "./lib/editorPersistence";
 import AiActivity from "./components/agent/AiActivity";
+import type { SessionResumeMode } from "./lib/sessionResume";
 
 type WorkMode =
   | "library"
   | "planning"
+  | "harness"
   | "discuss"
   | "simulate"
   | "studio"
   | "ide"
   | "revision"
   | "knowledge"
+  | "style"
   | "collab"
   | "checkpoints";
 
 const WORK_MODE_LABEL: Record<WorkMode, string> = {
   library: "书库",
   planning: "策划",
+  harness: "Harness",
   discuss: "探讨",
   simulate: "推演",
   studio: "创作",
   ide: "编辑",
   revision: "修订",
   knowledge: "知识库",
+  style: "文风",
   collab: "协作",
   checkpoints: "快照",
 };
 
 const LibraryWork = lazy(() => import("./screens/LibraryWork"));
 const PlanningWork = lazy(() => import("./screens/PlanningWork"));
+const HarnessWork = lazy(() => import("./screens/HarnessWork"));
 const DiscussWork = lazy(() => import("./screens/DiscussWork"));
 const SimulateWork = lazy(() => import("./screens/SimulateWork"));
 const StudioWork = lazy(() => import("./screens/StudioWork"));
 const IdeWork = lazy(() => import("./screens/IdeWork"));
 const RevisionWork = lazy(() => import("./screens/RevisionWork"));
 const KnowledgeWork = lazy(() => import("./screens/KnowledgeWork"));
+const StyleScreen = lazy(() => import("./screens/StyleScreen"));
 const CollabScreen = lazy(() => import("./screens/CollabScreen"));
 const CheckpointsScreen = lazy(() => import("./screens/CheckpointsScreen"));
 const SettingsModal = lazy(() => import("./components/SettingsModal"));
@@ -56,7 +63,7 @@ const SessionsDrawer = lazy(() => import("./components/SessionsDrawer"));
 const MemoryDrawer = lazy(() => import("./components/MemoryDrawer"));
 
 interface ResumeTarget {
-  kind: "discuss" | "studio";
+  kind: SessionResumeMode;
   sessionId: string;
   request: number;
 }
@@ -72,7 +79,7 @@ export default function App() {
   const resumeSeq = useRef(0);
   const navigationSeq = useRef(0);
 
-  const handleResumeSession = (kind: "discuss" | "studio", sessionId: string) => {
+  const handleResumeSession = (kind: SessionResumeMode, sessionId: string) => {
     const request = ++navigationSeq.current;
     setPendingMode(kind);
     cancelPendingEditorRuns();
@@ -202,7 +209,22 @@ export default function App() {
               }
             >
               {mode === "library"  && <LibraryWork />}
-              {mode === "planning" && <PlanningWork onOpenSettings={() => setShowSettings(true)} />}
+              {mode === "planning" && (
+                <PlanningWork
+                  onOpenSettings={() => setShowSettings(true)}
+                  initialSessionId={
+                    resumeTarget?.kind === "planning" ? resumeTarget.sessionId : undefined
+                  }
+                />
+              )}
+              {mode === "harness" && (
+                <HarnessWork
+                  onOpenSettings={() => setShowSettings(true)}
+                  initialSessionId={
+                    resumeTarget?.kind === "harness" ? resumeTarget.sessionId : undefined
+                  }
+                />
+              )}
               {mode === "discuss"  && (
                 <DiscussWork
                   onOpenSettings={() => setShowSettings(true)}
@@ -223,6 +245,7 @@ export default function App() {
               {mode === "ide"      && <IdeWork onSettingsOpen={() => setShowSettings(true)} />}
               {mode === "revision" && <RevisionWork />}
               {mode === "knowledge"&& <KnowledgeWork />}
+              {mode === "style" && <StyleScreen />}
               {mode === "collab" && <CollabScreen />}
               {mode === "checkpoints" && <CheckpointsScreen />}
             </Suspense>

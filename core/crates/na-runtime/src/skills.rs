@@ -208,6 +208,40 @@ impl SkillRegistry {
         SkillRegistry { skills: Vec::new() }
     }
 
+    /// Build the skills shipped with the application. User-provided skills can
+    /// still override these by calling [`load_dir`](Self::load_dir) afterward.
+    pub fn with_builtins() -> Self {
+        let mut registry = Self::new();
+        let mut humanizer = Skill::parse(include_str!("../assets/skills/humanizer/SKILL.md"))
+            .expect("embedded humanizer skill must have valid frontmatter");
+        // The original skill references companion documents. Embedding them in
+        // the instruction body keeps the playbook useful in a packaged binary
+        // where the source checkout is not present.
+        for (name, text) in [
+            (
+                "banned-words.md",
+                include_str!("../assets/skills/humanizer/references/banned-words.md"),
+            ),
+            (
+                "structures.md",
+                include_str!("../assets/skills/humanizer/references/structures.md"),
+            ),
+            (
+                "examples.md",
+                include_str!("../assets/skills/humanizer/references/examples.md"),
+            ),
+        ] {
+            humanizer
+                .instructions
+                .push_str("\n\n# Embedded reference: ");
+            humanizer.instructions.push_str(name);
+            humanizer.instructions.push_str("\n\n");
+            humanizer.instructions.push_str(text.trim());
+        }
+        registry.register(humanizer);
+        registry
+    }
+
     /// Register a skill. A later registration with the same name replaces the
     /// earlier one (so a directory load can override a built-in default).
     pub fn register(&mut self, skill: Skill) {
@@ -313,6 +347,20 @@ pub fn skill_system_message(skill: &Skill) -> Message {
     body.push('\n');
     body.push_str(&skill.instructions);
     Message::system(body)
+}
+
+/// Return the embedded humanizer playbook as a ready-to-inject system message.
+///
+/// The skill remains available through `skill_load`, but writing clients should
+/// not require the model to discover and load it before every chapter. Keeping
+/// this helper here makes the packaged host and in-process desktop client use
+/// the exact same playbook and companion references.
+pub fn embedded_humanizer_system_message() -> Message {
+    let registry = SkillRegistry::with_builtins();
+    let skill = registry
+        .get("humanizer")
+        .expect("embedded humanizer skill must be registered");
+    skill_system_message(skill)
 }
 
 /// JSON header describing a skill for tool output (no full instructions).
@@ -532,6 +580,26 @@ mod tests {
         assert_eq!(reg.len(), 2);
         assert_eq!(reg.get("s1").unwrap().description, "d1b");
         assert_eq!(reg.names(), vec!["s1".to_string(), "s2".to_string()]);
+    }
+
+    #[test]
+    fn builtins_include_humanizer_and_embedded_references() {
+        let reg = SkillRegistry::with_builtins();
+        let skill = reg.get("humanizer").expect("embedded humanizer");
+        assert!(skill
+            .instructions
+            .contains("Embedded reference: banned-words.md"));
+        assert!(skill.instructions.contains("不是A而是B"));
+    }
+
+    #[test]
+    fn embedded_humanizer_system_message_is_ready_for_injection() {
+        let message = embedded_humanizer_system_message();
+        assert!(message.is_system());
+        assert!(message.content.starts_with("# Skill: humanizer"));
+        assert!(message
+            .content
+            .contains("Embedded reference: structures.md"));
     }
 
     #[test]

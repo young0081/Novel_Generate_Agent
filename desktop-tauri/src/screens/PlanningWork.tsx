@@ -22,12 +22,15 @@ import {
   IconStar,
   IconSeed,
   IconStop,
+  IconHistory,
+  IconRefresh,
 } from "../components/icons";
 import { cancel, describeError, isDesktop, newRequestId } from "../lib/core";
 import { useToast } from "../components/Toast";
 import {
   runGoalLive,
   type AgentStep,
+  type Session,
 } from "../lib/studio";
 import { getProviders, PROVIDERS_CHANGED_EVENT } from "../lib/providers";
 import {
@@ -40,19 +43,30 @@ import {
   PLAN_STAGES,
   reachedWorkflowStage,
   stopReasonLabel,
+  previewArgs,
   type RunStep,
 } from "../lib/agentRun";
 import WorkStatus from "../components/agent/WorkStatus";
 import WorkflowSteps from "../components/agent/WorkflowSteps";
 import AgentFeed from "../components/agent/AgentFeed";
 import { scrollLiveAnchor } from "../lib/liveScroll";
+import { getSession } from "../lib/sessions";
+import {
+  countNewPlanningSaves,
+  planningContinuationGoal,
+  planningStopNote,
+  PLANNING_ACTION_TITLES,
+  restorePlanningSession,
+  type PlanningActionKey,
+} from "../lib/sessionResume";
 
 interface PlanningWorkProps {
   onOpenSettings?: () => void;
+  initialSessionId?: string;
 }
 
 interface PlanAction {
-  key: string;
+  key: PlanningActionKey;
   label: string;
   blurb: string;
   Icon: (p: { size?: number }) => ReactNode;
@@ -66,7 +80,7 @@ const ACTIONS: PlanAction[] = [
     label: "世界观",
     blurb: "构筑背景、规则与传说的根基",
     Icon: IconMountain,
-    title: "世界观设定",
+    title: PLANNING_ACTION_TITLES.worldbuilding,
     goal: (concept) =>
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
@@ -93,7 +107,7 @@ const ACTIONS: PlanAction[] = [
     label: "人物",
     blurb: "立起主角与群像的性情与关系",
     Icon: IconUser,
-    title: "人物设定",
+    title: PLANNING_ACTION_TITLES.character,
     goal: (concept) =>
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
@@ -120,7 +134,7 @@ const ACTIONS: PlanAction[] = [
     label: "大纲",
     blurb: "铺排起承转合的故事骨架",
     Icon: IconScroll,
-    title: "故事大纲",
+    title: PLANNING_ACTION_TITLES.outline,
     goal: (concept) =>
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
@@ -149,7 +163,7 @@ const ACTIONS: PlanAction[] = [
     label: "伏笔",
     blurb: "埋下草蛇灰线的线索与回响",
     Icon: IconThread,
-    title: "伏笔设计",
+    title: PLANNING_ACTION_TITLES.foreshadow,
     goal: (concept) =>
       `你是这部同人小说的策划助手。作者的构思如下：\n\n「${concept}」\n\n` +
       `## ⚠️ 核心约束（违反任一条视为失败）\n` +
@@ -174,6 +188,7 @@ const ACTIONS: PlanAction[] = [
 
 interface ActionRun {
   action: PlanAction;
+  session: Session | null;
   running: boolean;
   steps: RunStep[];
   finishNote: string | null;
@@ -191,17 +206,53 @@ interface ActiveModel {
   model: string;
 }
 
-export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
+export default function PlanningWork({ onOpenSettings, initialSessionId }: PlanningWorkProps) {
   const toast = useToast();
   const [concept, setConcept] = useState("");
   const [activeModel, setActiveModel] = useState<ActiveModel | null>(null);
   const [runs, setRuns] = useState<Map<string, ActionRun>>(new Map());
+  const [loadingSession, setLoadingSession] = useState(!!initialSessionId);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [followUps, setFollowUps] = useState<Partial<Record<PlanningActionKey, string>>>({});
   const [cancellingKey, setCancellingKey] = useState<string | null>(null);
   const activeRequestRef = useRef<{ id: string; key: string } | null>(null);
   const cancelledRequestsRef = useRef(new Set<string>());
   const lastRunKeyRef = useRef<string | null>(null);
   const runTailRef = useRef<HTMLDivElement>(null);
   const anyRunning = Array.from(runs.values()).some((run) => run.running);
+
+  useEffect(() => {
+    if (!initialSessionId) return;
+    let alive = true;
+    setLoadingSession(true);
+    setSessionError(null);
+    void getSession(initialSessionId).then((record) => {
+      if (!alive) return;
+      const restored = restorePlanningSession(record);
+      const action = ACTIONS.find((item) => item.key === restored.actionKey)!;
+      setConcept(restored.concept);
+      setRuns(new Map([[action.key, {
+        action,
+        session: record.session,
+        running: false,
+        steps: [],
+        finishNote: "已载入历史会话",
+        success: null,
+        error: null,
+        noProvider: false,
+        providerCompat: false,
+        finalAnswer: restored.finalAnswer,
+        savedCount: 0,
+        cancelled: false,
+      }]]));
+    }).catch((error) => {
+      if (!alive) return;
+      setSessionError(`载入会话失败：${describeError(error)}`);
+    }).finally(() => {
+      if (alive) setLoadingSession(false);
+    });
+    return () => { alive = false; };
+  }, [initialSessionId]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -245,7 +296,8 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
 
   const startAction = useCallback(
     async (action: PlanAction) => {
-      if (activeRequestRef.current) return;
+      if (activeRequestRef.current || loadingSession || sessionError) return;
+      const previousSession = runs.get(action.key)?.session ?? null;
       const c = concept.trim();
       if (!c) {
         toast.err("请先填写「构思」再生成设定");
@@ -276,12 +328,8 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                 cur.steps,
                 s.reason === "cancelled" ? "cancelled" : s.success ? "success" : "error",
               ),
-              running: false,
-              success: s.success,
-              cancelled: s.reason === "cancelled",
-              finishNote: s.success
-                ? `生成完成（共 ${s.steps} 步）`
-                : `${stopReasonLabel(s.reason)}（共 ${s.steps} 步）`,
+              // Wait for the saved session to count durable results before
+              // displaying a terminal outcome.
             });
             return next;
           });
@@ -314,6 +362,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
         const next = new Map(prev);
         next.set(action.key, {
           action,
+          session: previousSession,
           running: true,
           steps: [],
           finishNote: null,
@@ -333,14 +382,28 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
       activeRequestRef.current = { id: requestId, key: action.key };
       try {
         const result = await runGoalLive(
-          action.goal(c),
+          previousSession
+            ? planningContinuationGoal(action.title, c, followUps[action.key] ?? "")
+            : action.goal(c),
           action.title,
           handleStep,
-          undefined,
+          previousSession?.id,
           "planning",
           requestId,
         );
         flushStepFrame();
+        const savedCount = countNewPlanningSaves(result.session, previousSession);
+        setRuns((prev) => {
+          const cur = prev.get(action.key);
+          if (!cur) return prev;
+          return new Map(prev).set(action.key, {
+            ...cur,
+            session: result.session,
+            savedCount,
+            finalAnswer: result.outcome.final_answer,
+          });
+        });
+        setFollowUps((prev) => ({ ...prev, [action.key]: "" }));
         if (cancelledRequestsRef.current.delete(requestId)) {
           setRuns((prev) => {
             const cur = prev.get(action.key);
@@ -351,7 +414,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
               steps: settlePendingTools(cur.steps, "cancelled"),
               running: false,
               success: false,
-              finishNote: "已由用户停止",
+              finishNote: planningStopNote("已由用户停止", savedCount, result.outcome.steps),
               cancelled: true,
             });
             return next;
@@ -373,7 +436,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
               running: false,
               success: false,
               cancelled: stoppedReason === "cancelled",
-              finishNote: stopReasonLabel(stoppedReason),
+              finishNote: planningStopNote(stopReasonLabel(stoppedReason), savedCount, result.outcome.steps),
             });
             return next;
           });
@@ -381,10 +444,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
         }
         if (result.outcome.warning) toast.info(result.outcome.warning);
         // Count successful saves, not merely attempted calls.
-        const savedCount = result.session.messages.filter(
-          (message) =>
-            message.tool_result?.name === "memory_save" && message.tool_result.ok,
-        ).length;
+        const completed = savedCount > 0 || previousSession !== null;
 
         setRuns((prev) => {
           const cur = prev.get(action.key);
@@ -392,22 +452,24 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
           const next = new Map(prev);
           next.set(action.key, {
             ...cur,
-            steps: settlePendingTools(cur.steps, savedCount > 0 ? "success" : "error"),
+            steps: settlePendingTools(cur.steps, completed ? "success" : "error"),
             running: false,
-            success: savedCount > 0,
+            success: completed,
             savedCount,
             finalAnswer: result.outcome.final_answer,
             finishNote: savedCount > 0
               ? `生成完成（已保存 ${savedCount} 条，共 ${result.outcome.steps} 步）`
-              : `生成结束，但未保存任何内容（共 ${result.outcome.steps} 步）`,
+              : previousSession
+                ? `本轮策划完成，未新增入库条目（共 ${result.outcome.steps} 步）`
+                : `生成结束，但未保存任何内容（共 ${result.outcome.steps} 步）`,
           });
           return next;
         });
 
-        if (savedCount === 0) {
+        if (savedCount === 0 && !previousSession) {
           toast.info(`${action.label}生成结束，但未保存任何内容（AI 可能没理解任务）`);
         } else {
-          toast.ok(`${action.label}生成完成（已保存 ${savedCount} 条）`);
+          toast.ok(`${action.label}策划完成（本轮保存 ${savedCount} 条）`);
         }
       } catch (e) {
         flushStepFrame();
@@ -447,7 +509,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
         setCancellingKey((key) => (key === action.key ? null : key));
       }
     },
-    [concept, toast],
+    [concept, toast, runs, loadingSession, sessionError, followUps],
   );
 
   const stopAction = useCallback(async (key: string) => {
@@ -464,16 +526,45 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
     }
   }, [cancellingKey, toast]);
 
+  const reset = () => {
+    if (activeRequestRef.current || loadingSession) return;
+    setConcept("");
+    setRuns(new Map());
+    setFollowUps({});
+    setSessionError(null);
+    setCancellingKey(null);
+    lastRunKeyRef.current = null;
+  };
+
   return (
     <div className="work-content planning2">
       {/* Single column: 构思输入 */}
       <div className="planning2__left">
         <section className="panel planning2__concept-panel">
           <p className="panel__kicker">第一幕 · 策划</p>
-          <h2 className="panel__title">构思</h2>
+          <div className="studio2__composer-head">
+            <h2 className="panel__title">构思</h2>
+            {(runs.size > 0 || sessionError) && (
+              <button className="btn btn--ghost" onClick={reset} disabled={anyRunning || loadingSession}>
+                <IconRefresh size={16} /> 新建会话
+              </button>
+            )}
+          </div>
           <p className="panel__subtitle">
             写下你的核心构思，然后到右侧生成正式的世界观、人物、大纲与伏笔设定。需要脑暴？切换到「探讨」标签与 AI 自由对话。
           </p>
+
+          {loadingSession && (
+            <div className="studio2__continuing" role="status">
+              <Spinner size={14} /> 正在载入策划会话…
+            </div>
+          )}
+          {sessionError && <div className="studio2__notice-err" role="alert"><IconWarn size={14} /> {sessionError}</div>}
+          {Array.from(runs.values()).filter((run) => run.session).map((run) => (
+            <div key={run.action.key} className="studio2__continuing">
+              <IconHistory size={14} /> 当前会话「{run.session!.title}」
+            </div>
+          ))}
 
           {activeModel ? (
             <div className="planning2__model">
@@ -501,6 +592,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
               <textarea
                 className="textarea"
                 value={concept}
+                disabled={loadingSession || anyRunning || !!sessionError}
                 onChange={(e) => setConcept(e.target.value)}
                 placeholder="例如：鬼灭之刃同人，聚焦杏寿郎与猗窝座的宿命羁绊，重写无限列车与后日谈……"
                 rows={5}
@@ -535,13 +627,27 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                       <p className="planning2__card-blurb">{a.blurb}</p>
                     </div>
                   </div>
+                  {run?.session && (
+                    <label className="input-field">
+                      <span className="input-field__label">补充要求</span>
+                      <textarea
+                        className="textarea"
+                        aria-label={`${a.label}补充要求`}
+                        value={followUps[a.key] ?? ""}
+                        onChange={(event) => setFollowUps((prev) => ({ ...prev, [a.key]: event.target.value }))}
+                        disabled={anyRunning || loadingSession || !!sessionError}
+                        rows={2}
+                        spellCheck={false}
+                      />
+                    </label>
+                  )}
                   <button
                     className={`btn ${run?.running ? "btn--danger" : "btn--primary"} btn--sm`}
                     onClick={() => run?.running ? void stopAction(a.key) : void startAction(a)}
                     disabled={
                       run?.running
                         ? cancellingKey === a.key
-                        : anyRunning || !concept.trim() || !activeModel
+                        : anyRunning || loadingSession || !!sessionError || !concept.trim() || !activeModel
                     }
                   >
                     {run?.running ? (
@@ -552,7 +658,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                     ) : (
                       <>
                         <IconBrush size={14} />
-                        生成
+                        {run?.session ? "继续策划" : "生成"}
                       </>
                     )}
                   </button>
@@ -594,7 +700,7 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                     {(r.running || r.steps.length > 0) && (
                       <div className="agent-console">
                         <WorkflowSteps stages={PLAN_STAGES} current={wf.current} state={wf.state} />
-                        <WorkStatus phase={phase} step={lastStepNo} toolCount={toolCount} />
+                        <WorkStatus phase={phase} step={lastStepNo} toolCount={toolCount} note={!r.running ? r.finishNote ?? undefined : undefined} />
                       </div>
                     )}
                     {(r.running || r.steps.length > 0) && (
@@ -615,17 +721,44 @@ export default function PlanningWork({ onOpenSettings }: PlanningWorkProps) {
                     {!r.running && r.error && <div className="studio2__notice-err"><IconWarn size={14} /> {r.error}</div>}
                     {r.finishNote && (
                       <div className={`planning2__finish ${r.success ? "" : "planning2__finish--warn"}`}>
-                        {r.success ? <IconCheck size={14} /> : <IconWarn size={14} />} {r.finishNote}
+                        {r.success === null ? <IconHistory size={14} /> : r.success ? <IconCheck size={14} /> : <IconWarn size={14} />} {r.finishNote}
                         {r.savedCount === 0 && r.success === false && !r.cancelled && (
                           <p className="planning2__finish-hint">
-                            提示：AI 完成了思考，但没有调用 memory_save 工具保存内容。
-                            这可能是因为：① 模型不支持工具调用 ② 回复被截断 ③ 理解偏差。
-                            请检查上方的"AI 最终回复"，或尝试切换更强的模型。
+                            本轮尚未确认新增设定。请查看停止原因和工具结果，可通过“继续策划”接着处理。
                           </p>
                         )}
                       </div>
                     )}
                   </>
+                )}
+                {r.session && (
+                  <details className="studio2__transcript" open={!r.running}>
+                    <summary className="studio2__section-label">
+                      <IconScroll size={13} /> 全程记录 · {r.session.messages.length} 条
+                    </summary>
+                    <div className="studio2__messages">
+                      {r.session.messages.map((message, index) => (
+                        <div key={index} className={`msg msg--${message.role}`}>
+                          <div className="msg__body">
+                            <div className="msg__head">
+                              <span className="msg__role">
+                                {{ user: "要求", assistant: "策划", system: "系统", tool: "工具结果" }[message.role]}
+                              </span>
+                              {message.tool_call && <span className="msg__tag">{message.tool_call.name}</span>}
+                              {message.tool_result && (
+                                <span className={`msg__tag ${message.tool_result.ok ? "is-ok" : "is-err"}`}>
+                                  {message.tool_result.ok ? "成功" : "失败"} · {message.tool_result.name}
+                                </span>
+                              )}
+                            </div>
+                            <div className="msg__text">
+                              {message.content || (message.tool_call ? previewArgs(message.tool_call.args) : "（无内容）")}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
               </section>
             );
