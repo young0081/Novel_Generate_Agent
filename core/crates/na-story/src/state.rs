@@ -14,6 +14,7 @@ pub struct StoryState {
     /// World setting (immutable truths)
     pub world: WorldState,
     /// Character states (mutable)
+    #[serde(deserialize_with = "deserialize_characters")]
     pub characters: HashMap<CharacterId, CharacterState>,
     /// Current timeline position
     pub timeline: Timeline,
@@ -111,6 +112,44 @@ pub struct CharacterState {
     pub goals: Vec<String>,
 }
 
+fn deserialize_characters<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<CharacterId, CharacterState>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = HashMap::<CharacterId, serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|(key, mut value)| {
+            if let Some(object) = value.as_object_mut() {
+                object.entry("id").or_insert_with(|| key.clone().into());
+                object.entry("name").or_insert_with(|| key.clone().into());
+            }
+            serde_json::from_value(value)
+                .map(|character| (key, character))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
+
+fn deserialize_text_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum TextList {
+        Text(String),
+        List(Vec<String>),
+    }
+    Ok(match Option::<TextList>::deserialize(deserializer)? {
+        Some(TextList::Text(text)) => vec![text],
+        Some(TextList::List(items)) => items,
+        None => vec![],
+    })
+}
+
 /// Accept the pre-0.3 story-state format where a character was stored as a
 /// plain description string. New saves always serialize the structured form.
 impl<'de> Deserialize<'de> for CharacterState {
@@ -122,9 +161,12 @@ impl<'de> Deserialize<'de> for CharacterState {
         struct CharacterStateObject {
             id: Option<CharacterId>,
             name: Option<String>,
-            core_traits: Option<Vec<String>>,
+            #[serde(default, alias = "traits", deserialize_with = "deserialize_text_list")]
+            core_traits: Vec<String>,
+            #[serde(alias = "status")]
             current_status: Option<String>,
-            goals: Option<Vec<String>>,
+            #[serde(default, deserialize_with = "deserialize_text_list")]
+            goals: Vec<String>,
         }
 
         let value = serde_json::Value::deserialize(deserializer)?;
@@ -152,9 +194,9 @@ impl<'de> Deserialize<'de> for CharacterState {
                 Ok(Self {
                     id,
                     name,
-                    core_traits: object.core_traits.unwrap_or_default(),
+                    core_traits: object.core_traits,
                     current_status,
-                    goals: object.goals.unwrap_or_default(),
+                    goals: object.goals,
                 })
             }
             _ => Err(serde::de::Error::custom(
@@ -251,19 +293,20 @@ impl KnowledgeMatrix {
     }
 
     pub fn set_knowledge(&mut self, char_id: &str, fact_id: &str, knows: bool) {
-        self.entries.insert(
-            Self::key(char_id, fact_id),
-            KnowledgeEntry {
-                knows,
+        self.entries
+            .entry(Self::key(char_id, fact_id))
+            .and_modify(|entry| entry.knows = Some(knows))
+            .or_insert(KnowledgeEntry {
+                knows: Some(knows),
                 learned_at: None,
-            },
-        );
+                description: None,
+            });
     }
 
     pub fn knows(&self, char_id: &str, fact_id: &str) -> bool {
         self.entries
             .get(&Self::key(char_id, fact_id))
-            .map(|e| e.knows)
+            .and_then(|e| e.knows)
             .unwrap_or(false)
     }
 }
@@ -274,10 +317,59 @@ impl Default for KnowledgeMatrix {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct KnowledgeEntry {
-    pub knows: bool,
+    /// None means ownership is unspecified; a background note is not evidence
+    /// that any character knows the fact. Existing true/false values stay intact.
+    pub knows: Option<bool>,
     pub learned_at: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for KnowledgeEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct EntryObject {
+            knows: Option<bool>,
+            learned_at: Option<u32>,
+            description: Option<String>,
+        }
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = match value {
+            serde_json::Value::String(description) => EntryObject {
+                knows: None,
+                learned_at: None,
+                description: Some(description),
+            },
+            serde_json::Value::Bool(knows) => EntryObject {
+                knows: Some(knows),
+                learned_at: None,
+                description: None,
+            },
+            serde_json::Value::Object(_) => {
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "knowledge entry must be a description string, boolean or object",
+                ))
+            }
+        };
+        if object.knows.is_none() && object.description.is_none() {
+            return Err(serde::de::Error::custom(
+                "knowledge entry needs knows or description",
+            ));
+        }
+        Ok(Self {
+            knows: object.knows,
+            learned_at: object.learned_at,
+            description: object.description,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -627,6 +719,62 @@ mod tests {
             "id": "c", "description": "secret", "severity": "unknown"
         }))
         .is_err());
+    }
+
+    #[test]
+    fn knowledge_entries_preserve_notes_ownership_and_learned_chapters() {
+        let value = serde_json::json!({"entries": {
+            "place": "旧列车的坠落地点",
+            "hero::route": {"knows": true, "learned_at": 2, "description": "向北"},
+            "rival::route": {"knows": false, "learned_at": null},
+            "friend::route": false,
+            "guide::route": true,
+            "observer::route": {"description": "可能看过地图"}
+        }});
+        let mut matrix: KnowledgeMatrix = serde_json::from_value(value).unwrap();
+        assert_eq!(matrix.entries["place"].knows, None);
+        assert_eq!(
+            matrix.entries["place"].description.as_deref(),
+            Some("旧列车的坠落地点")
+        );
+        assert_eq!(matrix.entries["hero::route"].learned_at, Some(2));
+        assert!(matrix.knows("hero", "route"));
+        assert!(matrix.knows("guide", "route"));
+        assert!(!matrix.knows("rival", "route"));
+        assert!(!matrix.knows("friend", "route"));
+        assert!(!matrix.knows("observer", "route"));
+        matrix.set_knowledge("hero", "route", false);
+        assert_eq!(
+            matrix.entries["hero::route"].description.as_deref(),
+            Some("向北")
+        );
+        assert_eq!(matrix.entries["hero::route"].learned_at, Some(2));
+        let saved = serde_json::to_value(&matrix).unwrap();
+        assert_eq!(saved["entries"]["rival::route"]["knows"], false);
+        assert!(saved["entries"]["place"]["knows"].is_null());
+        assert_eq!(matrix, serde_json::from_value(saved).unwrap());
+    }
+
+    #[test]
+    fn malformed_knowledge_and_character_fields_are_not_silently_discarded() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!(17),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"knows": "false"}),
+            serde_json::json!({"description": 17}),
+            serde_json::json!({"knows": true, "learned_at": "yesterday"}),
+        ] {
+            assert!(serde_json::from_value::<KnowledgeEntry>(value).is_err());
+        }
+        for value in [
+            serde_json::json!({"status": 17}),
+            serde_json::json!({"traits": [false]}),
+            serde_json::json!({"goals": {"hidden": "goal"}}),
+        ] {
+            assert!(serde_json::from_value::<CharacterState>(value).is_err());
+        }
     }
 
     #[test]

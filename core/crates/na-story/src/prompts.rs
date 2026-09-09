@@ -64,6 +64,35 @@ pub fn render_state_sync_prompt(pkg: &ContextPackage) -> String {
         prompt.push('\n');
     }
 
+    // Keep migrated notes in the context without treating background facts as
+    // knowledge automatically possessed by every character. Sort for stable prompts.
+    if !pkg.knowledge_matrix.entries.is_empty() {
+        prompt
+            .push_str("## 背景资料与角色知情记录\n未注明知情角色的资料不代表任何角色已经得知。\n");
+        let mut entries: Vec<_> = pkg.knowledge_matrix.entries.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (key, entry) in entries {
+            if let Some((character, fact)) = key.split_once("::") {
+                let ownership = match entry.knows {
+                    Some(true) => "已知",
+                    Some(false) => "未知",
+                    None => "知情状态未记录",
+                };
+                prompt.push_str(&format!("- {character} / {fact}：{ownership}"));
+            } else {
+                prompt.push_str(&format!("- 背景资料 {key}（未注明知情角色）"));
+            }
+            if let Some(description) = &entry.description {
+                prompt.push_str(&format!("：{description}"));
+            }
+            if let Some(chapter) = entry.learned_at {
+                prompt.push_str(&format!("（记录章节：{chapter}）"));
+            }
+            prompt.push('\n');
+        }
+        prompt.push('\n');
+    }
+
     // Chapter goal
     if let Some(goal) = &pkg.chapter_goal {
         prompt.push_str(&format!("## 本章创作目标\n{}\n\n", goal.description));
@@ -103,6 +132,7 @@ mod tests {
             hard_constraints: vec![constraint],
             pending_foreshadows: vec![],
             chapter_goal: None,
+            knowledge_matrix: KnowledgeMatrix::new(),
         };
 
         let prompt = render_state_sync_prompt(&pkg);
@@ -130,6 +160,7 @@ mod tests {
             hard_constraints: vec![],
             pending_foreshadows: vec![fh],
             chapter_goal: None,
+            knowledge_matrix: KnowledgeMatrix::new(),
         };
 
         let prompt = render_state_sync_prompt(&pkg);
@@ -152,6 +183,7 @@ mod tests {
             hard_constraints: vec![],
             pending_foreshadows: vec![],
             chapter_goal: None,
+            knowledge_matrix: KnowledgeMatrix::new(),
         };
 
         let prompt = render_state_sync_prompt(&pkg);

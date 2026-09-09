@@ -71,6 +71,7 @@ impl StoryStateManager {
             hard_constraints: self.active_constraints(Severity::High),
             pending_foreshadows: self.pending_foreshadows(),
             chapter_goal: self.state.current_chapter_goal.clone(),
+            knowledge_matrix: self.state.knowledge_matrix.clone(),
         }
     }
 
@@ -112,6 +113,7 @@ pub struct ContextPackage {
     pub hard_constraints: Vec<Constraint>,
     pub pending_foreshadows: Vec<ForeshadowTracker>,
     pub chapter_goal: Option<ChapterGoal>,
+    pub knowledge_matrix: KnowledgeMatrix,
 }
 
 #[cfg(test)]
@@ -198,6 +200,56 @@ mod tests {
         assert_eq!(final_state.timeline.events.len(), 3);
         assert_eq!(final_state.foreshadows[0].description, description);
         assert_eq!(final_state.soft_preferences[0].description, "对话简洁");
+    }
+
+    #[test]
+    fn model_authored_knowledge_and_characters_survive_chapter_roundtrip() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("story_state.json");
+        let mut json = serde_json::to_value(StoryState::default()).unwrap();
+        json["meta"]["last_chapter"] = serde_json::json!(2);
+        json["characters"] = serde_json::json!({
+            "旅人": {"status": "已抵达荒原", "traits": "谨慎，熟悉机械"}
+        });
+        json["knowledge_matrix"]["entries"] = serde_json::json!({
+            "荒原": "旧列车坠落的地点，附近有修复设施",
+            "旅人::航线": {"knows": true, "learned_at": 2},
+            "同伴::航线": {"knows": false, "learned_at": null}
+        });
+        let original = serde_json::to_vec_pretty(&json).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let mut manager = StoryStateManager::open(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(manager.state.characters["旅人"].name, "旅人");
+        assert_eq!(
+            manager.state.characters["旅人"].current_status,
+            "已抵达荒原"
+        );
+        assert_eq!(
+            manager.state.characters["旅人"].core_traits,
+            ["谨慎，熟悉机械"]
+        );
+        assert!(manager.state.knowledge_matrix.knows("旅人", "航线"));
+        assert!(!manager.state.knowledge_matrix.knows("同伴", "航线"));
+        assert!(!manager.state.knowledge_matrix.knows("旅人", "荒原"));
+        manager.set_chapter_goal(3, "沿着航线出发".to_string());
+        let prompt = crate::render_state_sync_prompt(&manager.prepare_context(3));
+        assert!(prompt.contains("已抵达荒原"));
+        assert!(prompt.contains("谨慎，熟悉机械"));
+        assert!(prompt.contains("旧列车坠落的地点，附近有修复设施"));
+        assert!(prompt.contains("背景资料 荒原（未注明知情角色）"));
+        assert!(prompt.contains("旅人 / 航线：已知（记录章节：2）"));
+        assert!(prompt.contains("同伴 / 航线：未知"));
+        manager.save().unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(saved["knowledge_matrix"]["entries"]["荒原"].is_object());
+        for _ in 0..3 {
+            let reloaded = StoryStateManager::open(&path).unwrap();
+            assert_eq!(reloaded.state, manager.state);
+            reloaded.save().unwrap();
+        }
+        assert_eq!(manager.state.meta.last_chapter, 2);
     }
 
     #[test]
