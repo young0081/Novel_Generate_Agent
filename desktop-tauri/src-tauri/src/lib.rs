@@ -973,9 +973,11 @@ fn thinking_guidance(level: Option<&str>) -> String {
 
 fn thinking_limits(level: Option<&str>) -> (u32, u64, usize) {
     match level.unwrap_or("balanced") {
-        "light" => (8, 90_000, 80_000),
-        "deep" => (24, 180_000, 320_000),
-        _ => (16, 120_000, 200_000),
+        // Token accounting remains an emergency runaway guard, but it must
+        // not cut off an ordinary chapter after only a few tool turns.
+        "light" => (8, 90_000, 500_000),
+        "deep" => (24, 180_000, 2_000_000),
+        _ => (16, 120_000, 1_000_000),
     }
 }
 
@@ -2875,10 +2877,10 @@ mod tests {
             session_run_limits("discuss", Some("deep"), None),
             thinking_limits(Some("deep"))
         );
-        assert_eq!(thinking_limits(Some("light")), (8, 90_000, 80_000));
-        assert_eq!(thinking_limits(Some("balanced")), (16, 120_000, 200_000));
-        assert_eq!(thinking_limits(Some("deep")), (24, 180_000, 320_000));
-        assert_eq!(thinking_limits(Some("unknown")), (16, 120_000, 200_000));
+        assert_eq!(thinking_limits(Some("light")), (8, 90_000, 500_000));
+        assert_eq!(thinking_limits(Some("balanced")), (16, 120_000, 1_000_000));
+        assert_eq!(thinking_limits(Some("deep")), (24, 180_000, 2_000_000));
+        assert_eq!(thinking_limits(Some("unknown")), (16, 120_000, 1_000_000));
     }
 
     #[test]
