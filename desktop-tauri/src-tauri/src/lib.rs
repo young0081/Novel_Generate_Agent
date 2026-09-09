@@ -973,11 +973,12 @@ fn thinking_guidance(level: Option<&str>) -> String {
 
 fn thinking_limits(level: Option<&str>) -> (u32, u64, usize) {
     match level.unwrap_or("balanced") {
-        // Token accounting remains an emergency runaway guard, but it must
-        // not cut off an ordinary chapter after only a few tool turns.
-        "light" => (8, 90_000, 500_000),
-        "deep" => (24, 180_000, 2_000_000),
-        _ => (16, 120_000, 1_000_000),
+        // Interactive writing does not stop on accumulated token usage. The
+        // loop is bounded by cancellation plus repeated-action/no-progress
+        // detection; usize::MAX keeps the runtime accounting branch inert.
+        "light" => (8, 90_000, usize::MAX),
+        "deep" => (24, 180_000, usize::MAX),
+        _ => (16, 120_000, usize::MAX),
     }
 }
 
@@ -996,8 +997,8 @@ fn session_run_limits(
 ) -> (u32, u64, usize) {
     if kind == "planning" {
         // Planning has no thinking-level picker. Allow a full multi-entry run
-        // with resumed context; retain finite time, step and token guards.
-        (32, 300_000, 1_000_000)
+        // with resumed context; it uses the same dead-loop guards as writing.
+        (32, 300_000, usize::MAX)
     } else {
         let (default_steps, max_wall_ms, max_tokens) = thinking_limits(level);
         let max_steps = requested_max_steps
@@ -2865,10 +2866,7 @@ mod tests {
 
     #[test]
     fn discuss_thinking_levels_scale_agent_budgets() {
-        assert_eq!(
-            session_run_limits("planning", None, None),
-            (32, 300_000, 1_000_000)
-        );
+        assert_eq!(session_run_limits("planning", None, None), (32, 300_000, usize::MAX));
         assert_eq!(
             session_run_limits("writing", None, None),
             thinking_limits(None)
@@ -2877,10 +2875,10 @@ mod tests {
             session_run_limits("discuss", Some("deep"), None),
             thinking_limits(Some("deep"))
         );
-        assert_eq!(thinking_limits(Some("light")), (8, 90_000, 500_000));
-        assert_eq!(thinking_limits(Some("balanced")), (16, 120_000, 1_000_000));
-        assert_eq!(thinking_limits(Some("deep")), (24, 180_000, 2_000_000));
-        assert_eq!(thinking_limits(Some("unknown")), (16, 120_000, 1_000_000));
+        assert_eq!(thinking_limits(Some("light")), (8, 90_000, usize::MAX));
+        assert_eq!(thinking_limits(Some("balanced")), (16, 120_000, usize::MAX));
+        assert_eq!(thinking_limits(Some("deep")), (24, 180_000, usize::MAX));
+        assert_eq!(thinking_limits(Some("unknown")), (16, 120_000, usize::MAX));
     }
 
     #[test]

@@ -131,7 +131,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
   const toast = useToast();
   const [goal, setGoal] = useState("");
   const [title, setTitle] = useState(DEFAULT_TITLE);
-  const [maxSteps, setMaxSteps] = useState(16);
+  const [maxSteps, setMaxSteps] = useState(32);
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<RunStep[]>([]);
