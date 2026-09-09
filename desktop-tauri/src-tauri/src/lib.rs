@@ -979,13 +979,29 @@ fn thinking_limits(level: Option<&str>) -> (u32, u64, usize) {
     }
 }
 
-fn session_run_limits(kind: &str, level: Option<&str>) -> (u32, u64, usize) {
+const MIN_AGENT_STEPS: u32 = 4;
+const MAX_AGENT_STEPS: u32 = 64;
+
+/// Resolve the loop budgets for a live run.
+///
+/// `max_steps` is a user-facing guard for interactive runs. Keep it bounded
+/// so a malformed or overly large value cannot turn a single invocation into
+/// an unbounded operation. Planning retains its dedicated fixed budget.
+fn session_run_limits(
+    kind: &str,
+    level: Option<&str>,
+    requested_max_steps: Option<u32>,
+) -> (u32, u64, usize) {
     if kind == "planning" {
         // Planning has no thinking-level picker. Allow a full multi-entry run
         // with resumed context; retain finite time, step and token guards.
         (32, 300_000, 1_000_000)
     } else {
-        thinking_limits(level)
+        let (default_steps, max_wall_ms, max_tokens) = thinking_limits(level);
+        let max_steps = requested_max_steps
+            .unwrap_or(default_steps)
+            .clamp(MIN_AGENT_STEPS, MAX_AGENT_STEPS);
+        (max_steps, max_wall_ms, max_tokens)
     }
 }
 
@@ -1035,6 +1051,7 @@ async fn run_goal_live(
     request_id: Option<String>,
     sampling: Option<SamplingParams>,
     thinking_level: Option<String>,
+    max_steps: Option<u32>,
 ) -> Result<Json, String> {
     let _operation_lease = state.operation_gate.read().await;
     let active = state.active_context()?;
@@ -1208,7 +1225,7 @@ async fn run_goal_live(
     let run_history_start = session.history().len();
 
     let (max_steps, max_wall_ms, max_tokens) =
-        session_run_limits(&session_kind, thinking_level.as_deref());
+        session_run_limits(&session_kind, thinking_level.as_deref(), max_steps);
     let outcome = GoalLoop::with_protocol(agent_protocol)
         .require_file_for_long_answer(should_auto_save_chapter)
         .max_steps(max_steps)
@@ -2847,18 +2864,36 @@ mod tests {
     #[test]
     fn discuss_thinking_levels_scale_agent_budgets() {
         assert_eq!(
-            session_run_limits("planning", None),
+            session_run_limits("planning", None, None),
             (32, 300_000, 1_000_000)
         );
-        assert_eq!(session_run_limits("writing", None), thinking_limits(None));
         assert_eq!(
-            session_run_limits("discuss", Some("deep")),
+            session_run_limits("writing", None, None),
+            thinking_limits(None)
+        );
+        assert_eq!(
+            session_run_limits("discuss", Some("deep"), None),
             thinking_limits(Some("deep"))
         );
         assert_eq!(thinking_limits(Some("light")), (8, 90_000, 80_000));
         assert_eq!(thinking_limits(Some("balanced")), (16, 120_000, 200_000));
         assert_eq!(thinking_limits(Some("deep")), (24, 180_000, 320_000));
         assert_eq!(thinking_limits(Some("unknown")), (16, 120_000, 200_000));
+    }
+
+    #[test]
+    fn live_step_limit_accepts_requested_value_and_clamps_boundaries() {
+        assert_eq!(session_run_limits("writing", None, Some(32)).0, 32);
+        assert_eq!(
+            session_run_limits("writing", None, Some(0)).0,
+            MIN_AGENT_STEPS
+        );
+        assert_eq!(
+            session_run_limits("writing", None, Some(u32::MAX)).0,
+            MAX_AGENT_STEPS
+        );
+        // Planning keeps its dedicated budget even if a client sends a value.
+        assert_eq!(session_run_limits("planning", None, Some(4)).0, 32);
     }
 
     #[test]

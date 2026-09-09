@@ -128,6 +128,8 @@ export type ThinkingLevel = "light" | "balanced" | "deep";
 export interface LiveRunOptions {
   sampling?: SamplingParams;
   thinkingLevel?: ThinkingLevel;
+  /** Maximum number of model/tool loop steps for this run. */
+  maxSteps?: number;
 }
 
 /**
@@ -163,6 +165,7 @@ export async function runGoalLive(
       requestId: activeRequestId,
       sampling: options?.sampling,
       thinkingLevel: options?.thinkingLevel,
+      maxSteps: options?.maxSteps,
     })) as LiveRun;
   } finally {
     un();

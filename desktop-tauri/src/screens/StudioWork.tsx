@@ -56,6 +56,7 @@ import { latestWritingAnswer, resolveWritingResult, writingAnswerText } from "..
 
 const DEFAULT_TITLE = "新章节";
 const GOAL_EXAMPLE = "例如：写第一章，介绍主角林惊羽在北境的登场";
+const STEP_LIMIT_OPTIONS = [8, 16, 24, 32, 48, 64] as const;
 
 interface StudioWorkProps {
   onOpenSettings?: () => void;
@@ -130,6 +131,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
   const toast = useToast();
   const [goal, setGoal] = useState("");
   const [title, setTitle] = useState(DEFAULT_TITLE);
+  const [maxSteps, setMaxSteps] = useState(16);
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<RunStep[]>([]);
@@ -146,6 +148,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
   const [loadingSession, setLoadingSession] = useState(!!initialSessionId);
   const [cancelling, setCancelling] = useState(false);
   const [cancelled, setCancelled] = useState(false);
+  const [processExpanded, setProcessExpanded] = useState(true);
 
   const stepSeq = useRef(0);
   const liveTailRef = useRef<HTMLDivElement>(null);
@@ -258,6 +261,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     setNoProvider(false);
     setProviderCompat(false);
     setSteps([]);
+    setProcessExpanded(true);
     setFinishNote(null);
     setSuccess(null);
     setSession(null);
@@ -273,6 +277,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
         sessionId ?? undefined,
         "writing",
         requestId,
+        { maxSteps },
       );
       setSession(run.session);
       setSessionId(run.session.id);
@@ -286,6 +291,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
       setFinishNote(result.success
         ? `创作完成（共 ${run.outcome.steps} 步）`
         : `${stopReasonLabel(stoppedReason)}（共 ${run.outcome.steps} 步）`);
+      if (result.success) setProcessExpanded(false);
       const terminalToolStatus = result.cancelled
         ? "cancelled"
         : result.success
@@ -324,7 +330,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
       setRunning(false);
       setCancelling(false);
     }
-  }, [goal, title, handleStep, toast, sessionId]);
+  }, [goal, title, handleStep, toast, sessionId, maxSteps]);
 
   const reset = useCallback(() => {
     setSteps([]);
@@ -339,6 +345,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
     setSessionId(null);
     setContinuingTitle(null);
     setGoal("");
+    setProcessExpanded(true);
     stepSeq.current = 0;
   }, []);
 
@@ -425,6 +432,20 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
             disabled={running}
             aria-label="章节标题"
           />
+          <label className="studio2__steps-control">
+            <span>步骤上限</span>
+            <select
+              className="select studio2__steps"
+              value={maxSteps}
+              onChange={(e) => setMaxSteps(Number(e.target.value))}
+              disabled={running}
+              aria-label="步骤上限"
+            >
+              {STEP_LIMIT_OPTIONS.map((value) => (
+                <option key={value} value={value}>{value} 步</option>
+              ))}
+            </select>
+          </label>
           <button
             className="btn btn--primary"
             onClick={() => void start()}
@@ -530,14 +551,27 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
                         创作历程 · {steps.length} 步
                       </>
                     )}
+                    {steps.length > 0 && (
+                      <button
+                        type="button"
+                        className="studio2__process-toggle"
+                        onClick={() => setProcessExpanded((expanded) => !expanded)}
+                        aria-expanded={processExpanded}
+                        aria-controls="studio2-process-feed"
+                      >
+                        {processExpanded ? "收起步骤" : "展开步骤"}
+                      </button>
+                    )}
                   </div>
-                  <AgentFeed
-                    steps={steps}
-                    running={running}
-                    phase={phase}
-                    pendingText="AI 正在思索下一笔…"
-                    tailRef={liveTailRef}
-                  />
+                  <div id="studio2-process-feed" hidden={!processExpanded}>
+                    <AgentFeed
+                      steps={steps}
+                      running={running}
+                      phase={phase}
+                      pendingText="AI 正在思索下一笔…"
+                      tailRef={liveTailRef}
+                    />
+                  </div>
                 </div>
               )}
 
