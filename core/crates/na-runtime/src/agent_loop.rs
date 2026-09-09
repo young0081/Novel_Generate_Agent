@@ -35,10 +35,13 @@ use crate::context::ContextManager;
 use crate::injection::PromptInjectionGuard;
 use crate::loop_hooks::{LoopHookRegistry, ToolExecutionOutcome};
 use crate::message::{Message, ToolCallRequest, ToolResultRef};
-use crate::model::{ModelProvider, Protocol};
+use crate::model::{FinishReason, ModelProvider, Protocol};
 use crate::orchestrator::{AgentAction, Orchestrator};
 use crate::scheduler::ToolScheduler;
 use crate::session::Session;
+
+const RESPONSE_RECOVERY_PREFIX: &str = "[response recovery] ";
+const MAX_RESPONSE_RECOVERIES: u32 = 2;
 
 /// Why the loop stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,6 +388,9 @@ impl GoalLoop {
         ctx: &ToolContext,
         mut memory: Option<&mut na_memory::MemoryStore>,
     ) -> Result<LoopOutcome> {
+        session.messages.retain(|message| {
+            !(message.is_system() && message.content.starts_with(RESPONSE_RECOVERY_PREFIX))
+        });
         // Seed the goal as a user message.
         if !goal.trim().is_empty() {
             session.push(Message::user(goal));
@@ -397,6 +403,7 @@ impl GoalLoop {
 
         let mut final_answer: Option<String> = None;
         let mut wrote_file = false;
+        let mut response_recoveries = 0;
         let stopped_reason = loop {
             // 0. Honor cancellation at the step boundary.
             if ctx.cancel.is_cancelled() {
@@ -436,7 +443,7 @@ impl GoalLoop {
             let on_delta = move |delta: &str| {
                 hooks.fire_model_delta(step_no, delta);
             };
-            let response = tokio::select! {
+            let mut response = tokio::select! {
                 biased;
                 _ = ctx.cancel.cancelled() => break StoppedReason::Cancelled,
                 _ = tokio::time::sleep(guard.remaining_wall_time()) => {
@@ -454,9 +461,53 @@ impl GoalLoop {
                 }
             };
 
+            // A length-limited call can contain syntactically valid but
+            // incomplete arguments. Do not publish or execute those calls.
+            if response.finish == FinishReason::Length {
+                response.tool_calls.clear();
+            }
+
             // 4b. Observability: the model has answered this step.
             self.loop_hooks
                 .fire_model_response(guard.steps(), &response);
+
+            if response.finish == FinishReason::Length
+                || (response.tool_calls.is_empty() && response.text.trim().is_empty())
+            {
+                if !response.text.trim().is_empty() {
+                    session.push(Message::assistant(response.text));
+                }
+                if response_recoveries >= MAX_RESPONSE_RECOVERIES {
+                    break StoppedReason::ModelStop;
+                }
+                response_recoveries += 1;
+                session.messages.retain(|message| {
+                    !(message.is_system() && message.content.starts_with(RESPONSE_RECOVERY_PREFIX))
+                });
+                let detail = if response.finish == FinishReason::Length {
+                    "Your previous response reached its output limit and was incomplete. \
+                     No tool calls from that response were executed. Re-emit any needed tool \
+                     call with complete, shorter arguments. Save a smaller complete section \
+                     with write_file, then use edit_file to extend it while preserving existing \
+                     content. Never overwrite existing content with \
+                     only a continuation fragment, or treat partial output as a finished result."
+                } else {
+                    "Your previous response contained no answer or tool call."
+                };
+                session.push(Message::system(format!(
+                    "{RESPONSE_RECOVERY_PREFIX}{detail} Continue the current user task from the \
+                     existing tool results. Do not repeat successful writes. Produce the next \
+                     required tool call, or a final answer only if the task is complete."
+                )));
+                if let Err(reason) = guard.register_progress(false) {
+                    break reason;
+                }
+                continue;
+            }
+            response_recoveries = 0;
+            session.messages.retain(|message| {
+                !(message.is_system() && message.content.starts_with(RESPONSE_RECOVERY_PREFIX))
+            });
 
             // 5. Parse into a protocol-independent action.
             let action = match self.orchestrator.parse_response(&response) {
@@ -621,6 +672,9 @@ impl GoalLoop {
             }
         };
 
+        session.messages.retain(|message| {
+            !(message.is_system() && message.content.starts_with(RESPONSE_RECOVERY_PREFIX))
+        });
         let outcome = LoopOutcome {
             stopped_reason,
             steps: guard.steps(),
@@ -1146,7 +1200,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_final_answer_is_model_stop() {
-        let provider = MockProvider::from_responses(vec![CompletionResponse::answer("   ")]);
+        let provider = MockProvider::from_fn(|_| CompletionResponse::answer("   "));
         let reg = registry_with(NoteTool);
         let c = ctx("modelstop", CancellationToken::new());
         let mut session = Session::new("modelstop");
@@ -1156,6 +1210,174 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome.stopped_reason, StoppedReason::ModelStop);
+        assert_eq!(outcome.steps, 3);
+        assert!(outcome.final_answer.is_none());
+        assert!(!session
+            .history()
+            .iter()
+            .any(|message| message.role == crate::message::Role::Assistant));
+    }
+
+    #[tokio::test]
+    async fn empty_response_recovers_without_repeating_successful_writes() {
+        for protocol in [Protocol::NativeToolCall, Protocol::ReActText] {
+            let root = temp_root("empty_recovery");
+            let ctx = ToolContextBuilder::new(&root).build().unwrap();
+            let registry = na_tools::builtin_registry();
+            let first = match protocol {
+                Protocol::NativeToolCall => CompletionResponse::tool_call(ToolCallRequest::new(
+                    "write_file",
+                    json!({"path": "chapter.md", "content": "Chapter one"}),
+                )),
+                Protocol::ReActText => CompletionResponse::react(
+                    "Action: write_file\nAction Input: {\"path\":\"chapter.md\",\"content\":\"Chapter one\"}",
+                ),
+            };
+            let provider = MockProvider::from_responses(vec![
+                first,
+                CompletionResponse::answer(""),
+                CompletionResponse::answer("Chapter saved."),
+            ]);
+            let mut session = Session::new("empty recovery");
+            let outcome = GoalLoop::with_protocol(protocol)
+                .run(
+                    "Write chapter one",
+                    &mut session,
+                    &provider,
+                    &registry,
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.stopped_reason, StoppedReason::GoalReached);
+            assert_eq!(outcome.steps, 3);
+            assert_eq!(outcome.final_answer.as_deref(), Some("Chapter saved."));
+            assert_eq!(
+                std::fs::read_to_string(root.join("chapter.md")).unwrap(),
+                "Chapter one"
+            );
+            assert_eq!(
+                session
+                    .history()
+                    .iter()
+                    .filter(|m| m.tool_result.is_some())
+                    .count(),
+                1
+            );
+            assert!(!session
+                .history()
+                .iter()
+                .any(|m| m.content.starts_with(RESPONSE_RECOVERY_PREFIX)));
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_response_after_reads_can_continue_to_save() {
+        let root = temp_root("read_empty_save");
+        let ctx = ToolContextBuilder::new(&root).build().unwrap();
+        let registry = na_tools::builtin_registry();
+        std::fs::write(root.join("outline.md"), "Chapter outline").unwrap();
+        let provider = MockProvider::from_responses(vec![
+            CompletionResponse::tool_call(ToolCallRequest::new(
+                "read_file",
+                json!({"path": "outline.md"}),
+            )),
+            CompletionResponse::answer(""),
+            CompletionResponse::tool_call(ToolCallRequest::new(
+                "write_file",
+                json!({"path": "chapter.md", "content": "New chapter"}),
+            )),
+            CompletionResponse::answer("New chapter saved."),
+        ]);
+        let mut session = Session::new("read empty save");
+        let outcome = GoalLoop::default()
+            .run(
+                "Write the next chapter",
+                &mut session,
+                &provider,
+                &registry,
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.stopped_reason, StoppedReason::GoalReached);
+        assert_eq!(outcome.steps, 4);
+        assert_eq!(
+            std::fs::read_to_string(root.join("chapter.md")).unwrap(),
+            "New chapter"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn truncated_tool_call_is_not_executed_before_recovery() {
+        let root = temp_root("truncated_call");
+        let ctx = ToolContextBuilder::new(&root).build().unwrap();
+        let registry = na_tools::builtin_registry();
+        let mut truncated = CompletionResponse::tool_call(ToolCallRequest::new(
+            "write_file",
+            json!({"path": "incomplete.md", "content": "unfinished"}),
+        ));
+        truncated.finish = FinishReason::Length;
+        let provider = MockProvider::from_responses(vec![
+            truncated,
+            CompletionResponse::tool_call(ToolCallRequest::new(
+                "write_file",
+                json!({"path": "chapter.md", "content": "Complete chapter"}),
+            )),
+            CompletionResponse::answer("Saved."),
+        ]);
+        let mut session = Session::new("truncated call");
+        let outcome = GoalLoop::default()
+            .run("Write a chapter", &mut session, &provider, &registry, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(outcome.stopped_reason, StoppedReason::GoalReached);
+        assert!(!root.join("incomplete.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("chapter.md")).unwrap(),
+            "Complete chapter"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn repeated_length_limited_answers_never_claim_completion() {
+        let provider = MockProvider::from_fn(|_| {
+            let mut response = CompletionResponse::answer("Unfinished chapter text");
+            response.finish = FinishReason::Length;
+            response
+        });
+        let registry = registry_with(NoteTool);
+        let ctx = ctx("length_stop", CancellationToken::new());
+        let mut session = Session::new("length stop");
+        let outcome = GoalLoop::default()
+            .run("Write", &mut session, &provider, &registry, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(outcome.stopped_reason, StoppedReason::ModelStop);
+        assert_eq!(outcome.steps, 3);
+        assert!(outcome.final_answer.is_none());
+        assert!(session
+            .history()
+            .iter()
+            .any(|m| m.content == "Unfinished chapter text"));
+    }
+
+    #[tokio::test]
+    async fn empty_response_recovery_honors_step_limit() {
+        let provider = MockProvider::from_fn(|_| CompletionResponse::answer(""));
+        let registry = registry_with(NoteTool);
+        let ctx = ctx("empty_step_limit", CancellationToken::new());
+        let mut session = Session::new("step limit");
+        let outcome = GoalLoop::default()
+            .max_steps(1)
+            .run("Write", &mut session, &provider, &registry, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(outcome.stopped_reason, StoppedReason::MaxSteps);
+        assert_eq!(outcome.steps, 1);
         assert!(outcome.final_answer.is_none());
     }
 

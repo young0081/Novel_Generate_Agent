@@ -1008,7 +1008,7 @@ export default function ProvidersScreen() {
               <div className="field">
                 <label className="field__label">
                   max_tokens
-                  {editing.protocol === "anthropic" ? "（默认 4096）" : "（可选）"}
+                  {editing.protocol === "gemini" ? "（默认 16384）" : editing.protocol === "anthropic" ? "（默认 4096）" : "（可选）"}
                 </label>
                 <input
                   className="input"
@@ -1018,7 +1018,7 @@ export default function ProvidersScreen() {
                     const v = e.target.value.replace(/[^\d]/g, "");
                     setEditing({ ...editing, max_tokens: v });
                   }}
-                  placeholder={editing.protocol === "anthropic" ? "4096" : "留空"}
+                  placeholder={editing.protocol === "gemini" ? "16384" : editing.protocol === "anthropic" ? "4096" : "留空"}
                 />
               </div>
             </div>

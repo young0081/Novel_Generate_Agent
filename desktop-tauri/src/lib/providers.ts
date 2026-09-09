@@ -49,7 +49,7 @@ export interface ProviderConfig {
   /** User-managed list of model names for this provider. */
   models: string[];
   default_model?: string | null;
-  /** Optional cap; Anthropic falls back to 4096 server-side when null. */
+  /** Optional cap; Gemini defaults to 16384, other protocols to 4096. */
   max_tokens?: number | null;
   /** Default sampling parameters for this provider. */
   sampling?: SamplingParams;

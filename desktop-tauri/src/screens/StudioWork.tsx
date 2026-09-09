@@ -52,6 +52,7 @@ import WorkflowSteps from "../components/agent/WorkflowSteps";
 import AgentFeed from "../components/agent/AgentFeed";
 import { getSession } from "../lib/sessions";
 import { scrollLiveAnchor } from "../lib/liveScroll";
+import { latestWritingAnswer, resolveWritingResult, writingAnswerText } from "../lib/studioResult";
 
 const DEFAULT_TITLE = "新章节";
 const GOAL_EXAMPLE = "例如：写第一章，介绍主角林惊羽在北境的登场";
@@ -170,7 +171,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
           ? `创作完成（共 ${s.steps} 步）`
           : `${stopReasonLabel(s.reason)}（共 ${s.steps} 步）`,
       );
-      if (s.final != null) setFinalAnswer(s.final);
+      setFinalAnswer(writingAnswerText(s.final));
     }
   }, []);
 
@@ -192,15 +193,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
         setTitle(record.session.title || DEFAULT_TITLE);
         setGoal(record.goal ?? "");
         setSession(record.session);
-        const lastAnswer = [...record.session.messages]
-          .reverse()
-          .find(
-            (message) =>
-              message.role === "assistant" &&
-              !!message.content.trim() &&
-              !message.tool_call,
-          );
-        setFinalAnswer(lastAnswer?.content ?? null);
+        setFinalAnswer(latestWritingAnswer(record.session.messages));
       })
       .catch((loadError) => {
         if (!alive) return;
@@ -285,38 +278,23 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
       setSessionId(run.session.id);
       setContinuingTitle(run.session.title || t);
 
-      // Resolve the final answer: prefer the event-streamed value (already in
-      // state from the finish event), fall back to the last assistant message.
-      // We compute this separately so TypeScript sees a concrete string type.
-      const sessionMsgs = run.session.messages ?? [];
-      let sessionFinal = "";
-      for (let i = sessionMsgs.length - 1; i >= 0; i--) {
-        const m = sessionMsgs[i];
-        if (m.role === "assistant" && m.content.trim() && !m.tool_call) {
-          sessionFinal = m.content;
-          break;
-        }
-      }
-      setFinalAnswer((prev) => {
-        if (prev && prev.trim()) return prev;
-        return sessionFinal || null;
-      });
-
+      const result = resolveWritingResult(run);
+      setFinalAnswer(result.finalAnswer);
+      setSuccess(result.success);
+      setCancelled(result.cancelled);
       const stoppedReason = run.outcome.stopped_reason;
-      const terminalToolStatus = stoppedReason === "cancelled" || cancelRequestedRef.current
+      setFinishNote(result.success
+        ? `创作完成（共 ${run.outcome.steps} 步）`
+        : `${stopReasonLabel(stoppedReason)}（共 ${run.outcome.steps} 步）`);
+      const terminalToolStatus = result.cancelled
         ? "cancelled"
-        : stoppedReason === "goal_reached"
+        : result.success
           ? "success"
           : "error";
       setSteps((prev) => settlePendingTools(prev, terminalToolStatus));
-      if (stoppedReason === "cancelled" || cancelRequestedRef.current) {
-        setCancelled(true);
-        setSuccess(false);
-        setFinishNote("已停止创作");
+      if (result.cancelled) {
         toast.info("已停止创作");
-      } else if (stoppedReason !== "goal_reached") {
-        setSuccess(false);
-        setFinishNote(stopReasonLabel(stoppedReason));
+      } else if (!result.success) {
         toast.info("本次创作未完整完成，可调整目标后继续");
       } else if (run.outcome.auto_save_error) {
         toast.err(`创作完成，但成稿自动保存失败：${run.outcome.auto_save_error}`);
@@ -517,7 +495,7 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
                     phase={phase}
                     step={lastStepNo}
                     toolCount={toolCount}
-                    note={currentToolNote}
+                    note={running ? currentToolNote : success === false ? finishNote ?? undefined : undefined}
                   />
                 </div>
               )}

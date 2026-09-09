@@ -1086,20 +1086,39 @@ pub fn parse_gemini_response(v: &Json) -> Result<CompletionResponse> {
         return Err(CoreError::model(format!("provider error: {msg}")));
     }
 
+    if let Some(reason) = v
+        .get("promptFeedback")
+        .and_then(|p| p.get("blockReason"))
+        .and_then(|r| r.as_str())
+        .filter(|r| *r != "BLOCK_REASON_UNSPECIFIED")
+    {
+        return Err(CoreError::model(format!("Gemini 内容被拦截（{reason}）")));
+    }
     let candidate = v
         .get("candidates")
         .and_then(|c| c.as_array())
         .and_then(|a| a.first())
         .ok_or_else(|| CoreError::model("响应中没有 candidates"))?;
+    let finish = gemini_finish_reason(candidate)?;
     let parts = candidate
         .get("content")
         .and_then(|c| c.get("parts"))
         .and_then(|p| p.as_array())
+        .map(Vec::as_slice)
+        .or_else(|| {
+            finish.and_then(|reason| {
+                matches!(reason, FinishReason::Stop | FinishReason::Length)
+                    .then_some(&[] as &[Json])
+            })
+        })
         .ok_or_else(|| CoreError::model("响应中没有 content.parts"))?;
 
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     for part in parts {
+        if part.get("thought").and_then(Json::as_bool) == Some(true) {
+            continue;
+        }
         if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
             text.push_str(t);
         }
@@ -1116,13 +1135,12 @@ pub fn parse_gemini_response(v: &Json) -> Result<CompletionResponse> {
         }
     }
 
-    let finish = if !tool_calls.is_empty() {
+    let finish = if finish == Some(FinishReason::Length) {
+        FinishReason::Length
+    } else if !tool_calls.is_empty() {
         FinishReason::ToolUse
     } else {
-        match candidate.get("finishReason").and_then(|f| f.as_str()) {
-            Some("MAX_TOKENS") => FinishReason::Length,
-            _ => FinishReason::Stop,
-        }
+        finish.unwrap_or(FinishReason::Stop)
     };
 
     Ok(CompletionResponse {
@@ -1131,6 +1149,18 @@ pub fn parse_gemini_response(v: &Json) -> Result<CompletionResponse> {
         finish,
         usage: parse_gemini_usage(v),
     })
+}
+
+/// Map Gemini's terminal reason while rejecting explicit safety/protocol
+/// failures. Those must reach the caller as errors rather than being mistaken
+/// for an empty answer that can be retried.
+fn gemini_finish_reason(candidate: &Json) -> Result<Option<FinishReason>> {
+    match candidate.get("finishReason").and_then(|f| f.as_str()) {
+        None | Some("FINISH_REASON_UNSPECIFIED") => Ok(None),
+        Some("STOP") => Ok(Some(FinishReason::Stop)),
+        Some("MAX_TOKENS") => Ok(Some(FinishReason::Length)),
+        Some(reason) => Err(CoreError::model(format!("Gemini 响应异常结束（{reason}）"))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1374,15 @@ fn gemini_stream_event_with_usage(
         return Err(CoreError::model(format!("provider error: {msg}")));
     }
 
+    if let Some(reason) = d
+        .get("promptFeedback")
+        .and_then(|p| p.get("blockReason"))
+        .and_then(|r| r.as_str())
+        .filter(|r| *r != "BLOCK_REASON_UNSPECIFIED")
+    {
+        return Err(CoreError::model(format!("Gemini 内容被拦截（{reason}）")));
+    }
+
     if let Some(parsed) = parse_gemini_usage(d) {
         *usage = Some(parsed);
     }
@@ -1356,12 +1395,19 @@ fn gemini_stream_event_with_usage(
         return Ok(());
     };
 
+    if let Some(reason) = gemini_finish_reason(candidate)? {
+        *finish = Some(reason);
+    }
+
     if let Some(parts) = candidate
         .get("content")
         .and_then(|c| c.get("parts"))
         .and_then(|p| p.as_array())
     {
         for part in parts {
+            if part.get("thought").and_then(Json::as_bool) == Some(true) {
+                continue;
+            }
             if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
                 if !t.is_empty() {
                     text.push_str(t);
@@ -1386,13 +1432,6 @@ fn gemini_stream_event_with_usage(
         }
     }
 
-    if let Some(fr) = candidate.get("finishReason").and_then(|f| f.as_str()) {
-        *finish = Some(match fr {
-            "MAX_TOKENS" => FinishReason::Length,
-            _ => FinishReason::Stop,
-        });
-    }
-
     Ok(())
 }
 
@@ -1411,6 +1450,16 @@ fn finish_accum_with_usage(
     finish: Option<FinishReason>,
     usage: Option<UsageMetadata>,
 ) -> Result<CompletionResponse> {
+    // Truncated tool argument JSON must never be executed or treated as a
+    // malformed complete call. The goal loop can request a complete response.
+    if finish == Some(FinishReason::Length) {
+        return Ok(CompletionResponse {
+            text,
+            tool_calls: Vec::new(),
+            finish: FinishReason::Length,
+            usage,
+        });
+    }
     let mut tool_calls = Vec::new();
     for t in tools {
         if t.name.is_empty() {
@@ -1482,7 +1531,12 @@ impl HttpModelProvider {
             .user_agent(concat!("novel-generate-agent/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| CoreError::model(format!("无法创建 HTTP 客户端: {e}")))?;
-        let max_tokens = config.max_tokens.unwrap_or(4096);
+        // Gemini's output allowance also covers reasoning before a long tool
+        // call. Keep explicit user limits, but leave room for chapter content.
+        let max_tokens = config.max_tokens.unwrap_or(match config.protocol {
+            ProviderProtocol::Gemini => 16_384,
+            _ => 4096,
+        });
         Ok(HttpModelProvider {
             client,
             config,
@@ -2156,6 +2210,9 @@ impl HttpModelProvider {
 /// provider that advertises chat completions but rejects native tools without
 /// restarting the session or treating the ReAct text as a final answer.
 fn adapt_react_fallback(response: CompletionResponse) -> CompletionResponse {
+    if response.finish == FinishReason::Length {
+        return response;
+    }
     let usage = response.usage.clone();
     match parse_react(&response.text) {
         Ok(ReActStep::Action {
@@ -3104,6 +3161,124 @@ mod tests {
     }
 
     #[test]
+    fn gemini_empty_and_thinking_only_responses_preserve_stop_reason() {
+        for (reason, expected) in [
+            ("STOP", FinishReason::Stop),
+            ("MAX_TOKENS", FinishReason::Length),
+        ] {
+            for content in [
+                Json::Null,
+                json!({"parts": [{"thought": true, "text": "Internal reasoning"}]}),
+            ] {
+                let event = json!({"candidates": [{"finishReason": reason, "content": content}]});
+                let response = parse_gemini_response(&event).unwrap();
+                assert_eq!(response.finish, expected);
+                assert!(response.text.is_empty());
+                assert!(response.tool_calls.is_empty());
+
+                let mut text = String::new();
+                let mut tools = Vec::new();
+                let mut finish = None;
+                gemini_stream_event(&event, &mut text, &mut tools, &mut finish, &|_| {
+                    panic!("thought must not be streamed as an answer")
+                })
+                .unwrap();
+                let response = finish_accum(text, tools, finish).unwrap();
+                assert_eq!(response.finish, expected);
+                assert!(response.text.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn gemini_explicit_blocks_and_protocol_failures_are_errors() {
+        for event in [
+            json!({"promptFeedback": {"blockReason": "SAFETY"}}),
+            json!({"candidates": [{"finishReason": "SAFETY"}]}),
+            json!({"candidates": [{"finishReason": "RECITATION"}]}),
+            json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]}),
+        ] {
+            assert!(parse_gemini_response(&event).is_err());
+            let mut text = String::new();
+            let mut tools = Vec::new();
+            let mut finish = None;
+            assert!(
+                gemini_stream_event(&event, &mut text, &mut tools, &mut finish, &|_| {}).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_unspecified_stream_reason_waits_for_terminal_event() {
+        let mut text = String::new();
+        let mut tools = Vec::new();
+        let mut finish = None;
+        gemini_stream_event(
+            &json!({"candidates": [{
+                "finishReason": "FINISH_REASON_UNSPECIFIED",
+                "content": {"parts": [{"text": "Chapter "}]}
+            }]}),
+            &mut text,
+            &mut tools,
+            &mut finish,
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(finish, None);
+        gemini_stream_event(
+            &json!({"candidates": [{
+                "finishReason": "STOP",
+                "content": {"parts": [{"text": "saved."}]}
+            }]}),
+            &mut text,
+            &mut tools,
+            &mut finish,
+            &|_| {},
+        )
+        .unwrap();
+        let response = finish_accum(text, tools, finish).unwrap();
+        assert_eq!(response.finish, FinishReason::Stop);
+        assert_eq!(response.text, "Chapter saved.");
+    }
+
+    #[test]
+    fn react_fallback_preserves_length_limited_text_and_actions() {
+        for text in [
+            "Partial chapter text",
+            "Final Answer: Partial answer",
+            "Action: write_file\nAction Input: {\"path\":\"chapter.md\",\"content\":\"partial\"}",
+        ] {
+            let mut response = CompletionResponse::answer(text);
+            response.finish = FinishReason::Length;
+            let adapted = adapt_react_fallback(response);
+            assert_eq!(adapted.finish, FinishReason::Length);
+            assert_eq!(adapted.text, text);
+            assert!(adapted.tool_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn gemini_length_limit_is_not_overridden_by_function_calls() {
+        let response = parse_gemini_response(&json!({"candidates": [{
+            "finishReason": "MAX_TOKENS",
+            "content": {"parts": [{"functionCall": {"name": "write_file", "args": {"path": "chapter.md", "content": "partial"}}}]}
+        }]})).unwrap();
+        assert_eq!(response.finish, FinishReason::Length);
+    }
+
+    #[test]
+    fn truncated_stream_tool_arguments_are_discarded_for_recovery() {
+        let tools = vec![ToolAccum {
+            id: "truncated".into(),
+            name: "write_file".into(),
+            args: "{\"path\":\"chapter.md\",\"content\":\"unfinished".into(),
+        }];
+        let response = finish_accum(String::new(), tools, Some(FinishReason::Length)).unwrap();
+        assert_eq!(response.finish, FinishReason::Length);
+        assert!(response.tool_calls.is_empty());
+    }
+
+    #[test]
     fn openai_stream_accumulates_text_and_tool_call() {
         // Three content deltas + a tool call split across deltas, then finish.
         let mut text = String::new();
@@ -3322,6 +3497,25 @@ mod tests {
             default_model: None,
             max_tokens: None,
             sampling: SamplingParams::default(),
+        }
+    }
+
+    #[test]
+    fn gemini_default_output_limit_leaves_room_for_reasoning_and_writing() {
+        for (protocol, default_limit) in [
+            (ProviderProtocol::OpenAi, 4096),
+            (ProviderProtocol::Anthropic, 4096),
+            (ProviderProtocol::Gemini, 16_384),
+        ] {
+            let mut config = cfg("output-limit");
+            config.protocol = protocol;
+            let provider = HttpModelProvider::new(config.clone(), "model").unwrap();
+            assert_eq!(provider.max_tokens, default_limit);
+            for configured_limit in [0, 1, 2048, 4096, 32_768] {
+                config.max_tokens = Some(configured_limit);
+                let provider = HttpModelProvider::new(config.clone(), "model").unwrap();
+                assert_eq!(provider.max_tokens, configured_limit);
+            }
         }
     }
 
