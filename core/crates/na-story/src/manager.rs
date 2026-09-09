@@ -155,6 +155,52 @@ mod tests {
     }
 
     #[test]
+    fn legacy_foreshadows_allow_successive_chapters_after_first_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("story_state.json");
+        let description = "玄机子留给顾长生的生锈铜钥匙及洞府试炼";
+        let mut manager = StoryStateManager::open(&path).unwrap();
+        manager.state.meta.title = "这个修仙界真的正常吗".to_string();
+        manager.advance_chapter();
+        manager.save().unwrap();
+
+        // Model-authored state after chapter one contains plain text entries.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json["foreshadows"] = serde_json::json!([description]);
+        json["hard_constraints"] = serde_json::json!(["主角不能凭空知道秘密"]);
+        json["soft_preferences"] = serde_json::json!(["对话简洁"]);
+        let original = serde_json::to_vec_pretty(&json).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let migrated = StoryStateManager::open(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let foreshadow_id = migrated.state.foreshadows[0].id.clone();
+        for chapter in 2..=4 {
+            let mut manager = StoryStateManager::open(&path).unwrap();
+            assert_eq!(manager.state.meta.last_chapter + 1, chapter);
+            manager.set_chapter_goal(chapter, format!("续写第{chapter}章"));
+            manager.save().unwrap();
+            let context = manager.prepare_context(chapter);
+            let prompt = crate::render_state_sync_prompt(&context);
+            assert!(prompt.contains(description));
+            assert!(prompt.contains("埋设章节未知"));
+            assert!(!prompt.contains("埋于第0章"));
+            assert!(prompt.contains("主角不能凭空知道秘密"));
+            assert_eq!(context.pending_foreshadows[0].id, foreshadow_id);
+            assert_eq!(context.chapter_goal.unwrap().chapter, chapter);
+            manager.add_timeline_event(chapter, format!("完成第{chapter}章"));
+            manager.advance_chapter();
+            manager.save().unwrap();
+        }
+        let final_state = StoryStateManager::open(&path).unwrap().state;
+        assert_eq!(final_state.meta.last_chapter, 4);
+        assert_eq!(final_state.timeline.events.len(), 3);
+        assert_eq!(final_state.foreshadows[0].description, description);
+        assert_eq!(final_state.soft_preferences[0].description, "对话简洁");
+    }
+
+    #[test]
     fn constraint_priority_ordering() {
         let path = temp_path("constraints");
         let mut mgr = StoryStateManager::open(&path).unwrap();

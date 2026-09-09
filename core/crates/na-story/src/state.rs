@@ -86,13 +86,17 @@ impl<'de> Deserialize<'de> for WorldRule {
 }
 
 fn legacy_rule_id(description: &str) -> String {
-    // Stable, dependency-free FNV-1a identifier for migrated legacy rules.
+    legacy_text_id("rule", description)
+}
+
+fn legacy_text_id(kind: &str, description: &str) -> String {
+    // Stable, dependency-free FNV-1a identifiers survive repeated legacy loads.
     let mut hash = 0x811c9dc5u32;
     for byte in description.as_bytes() {
         hash ^= u32::from(*byte);
         hash = hash.wrapping_mul(0x01000193);
     }
-    format!("legacy_rule_{hash:08x}")
+    format!("legacy_{kind}_{hash:08x}")
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -161,13 +165,7 @@ impl<'de> Deserialize<'de> for CharacterState {
 }
 
 fn legacy_character_id(description: &str) -> String {
-    // Stable, dependency-free FNV-1a identifier for migrated legacy characters.
-    let mut hash = 0x811c9dc5u32;
-    for byte in description.as_bytes() {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    format!("legacy_character_{hash:08x}")
+    legacy_text_id("character", description)
 }
 
 fn legacy_character_name(description: &str) -> String {
@@ -282,12 +280,55 @@ pub struct KnowledgeEntry {
     pub learned_at: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ForeshadowTracker {
     pub id: String,
     pub description: String,
     pub planted_at: u32,
     pub status: ForeshadowStatus,
+}
+
+/// Legacy and model-authored descriptions have no chapter/status metadata.
+/// Retain them as pending hints with an unknown planting chapter (zero).
+impl<'de> Deserialize<'de> for ForeshadowTracker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct ForeshadowObject {
+            id: Option<String>,
+            description: String,
+            planted_at: Option<u32>,
+            status: Option<ForeshadowStatus>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = match value {
+            serde_json::Value::String(description) => ForeshadowObject {
+                id: None,
+                description,
+                planted_at: None,
+                status: None,
+            },
+            serde_json::Value::Object(_) => {
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "foreshadow must be a string or an object",
+                ))
+            }
+        };
+        Ok(Self {
+            id: object
+                .id
+                .unwrap_or_else(|| legacy_text_id("foreshadow", &object.description)),
+            description: object.description,
+            planted_at: object.planted_at.unwrap_or_default(),
+            status: object.status.unwrap_or(ForeshadowStatus::Planted),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -298,11 +339,50 @@ pub enum ForeshadowStatus {
     Abandoned,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Constraint {
     pub id: String,
     pub description: String,
     pub severity: Severity,
+}
+
+/// Keep plain-text hard constraints active in the next chapter's context.
+impl<'de> Deserialize<'de> for Constraint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct ConstraintObject {
+            id: Option<String>,
+            description: String,
+            severity: Option<Severity>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = match value {
+            serde_json::Value::String(description) => ConstraintObject {
+                id: None,
+                description,
+                severity: None,
+            },
+            serde_json::Value::Object(_) => {
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "constraint must be a string or an object",
+                ))
+            }
+        };
+        Ok(Self {
+            id: object
+                .id
+                .unwrap_or_else(|| legacy_text_id("constraint", &object.description)),
+            description: object.description,
+            severity: object.severity.unwrap_or(Severity::High),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -314,9 +394,36 @@ pub enum Severity {
     Critical = 5,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Preference {
     pub description: String,
+}
+
+impl<'de> Deserialize<'de> for Preference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PreferenceObject {
+            description: String,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(description) => Ok(Self { description }),
+            serde_json::Value::Object(_) => {
+                let object: PreferenceObject =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    description: object.description,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "preference must be a string or an object",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -435,6 +542,91 @@ mod tests {
         let reloaded: StoryState = serde_json::from_value(saved).unwrap();
         assert_eq!(reloaded.characters["legacy_master"].id, legacy_character.id);
         assert_eq!(reloaded.characters["c_new"], state.characters["c_new"]);
+    }
+
+    #[test]
+    fn legacy_text_lists_preserve_content_and_structured_metadata() {
+        let mut json = serde_json::to_value(StoryState::default()).unwrap();
+        json["foreshadows"] = serde_json::json!([
+            "玄机子留给顾长生的生锈铜钥匙及洞府试炼",
+            {"id": "resolved_key", "description": "旧钥匙", "planted_at": 1, "status": "Resolved"},
+            {"id": "hinted_key", "description": "新线索", "planted_at": 2, "status": "Hinted"},
+            {"id": "abandoned_key", "description": "废弃线索", "planted_at": 1, "status": "Abandoned"}
+        ]);
+        json["hard_constraints"] = serde_json::json!([
+            "主角不能凭空知道秘密",
+            {"id": "critical_secret", "description": "身份保密", "severity": "Critical"}
+        ]);
+        json["soft_preferences"] = serde_json::json!([
+            "对话简洁",
+            {"description": "少用旁白"}
+        ]);
+
+        let state: StoryState = serde_json::from_value(json.clone()).unwrap();
+        let reloaded: StoryState = serde_json::from_value(json).unwrap();
+        assert_eq!(state, reloaded);
+        assert_eq!(
+            state.foreshadows[0].description,
+            "玄机子留给顾长生的生锈铜钥匙及洞府试炼"
+        );
+        assert_eq!(state.foreshadows[0].planted_at, 0);
+        assert_eq!(state.foreshadows[0].status, ForeshadowStatus::Planted);
+        assert!(state.foreshadows[0].id.starts_with("legacy_foreshadow_"));
+        assert_eq!(state.foreshadows[1].id, "resolved_key");
+        assert_eq!(state.foreshadows[1].status, ForeshadowStatus::Resolved);
+        assert_eq!(state.foreshadows[2].planted_at, 2);
+        assert_eq!(state.foreshadows[2].status, ForeshadowStatus::Hinted);
+        assert_eq!(state.foreshadows[3].status, ForeshadowStatus::Abandoned);
+        assert_eq!(
+            state.hard_constraints[0].description,
+            "主角不能凭空知道秘密"
+        );
+        assert_eq!(state.hard_constraints[0].severity, Severity::High);
+        assert!(state.hard_constraints[0]
+            .id
+            .starts_with("legacy_constraint_"));
+        assert_eq!(state.hard_constraints[1].severity, Severity::Critical);
+        assert_eq!(state.soft_preferences[0].description, "对话简洁");
+        assert_eq!(state.soft_preferences[1].description, "少用旁白");
+
+        let saved = serde_json::to_value(&state).unwrap();
+        for field in ["foreshadows", "hard_constraints", "soft_preferences"] {
+            assert!(saved[field]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item.is_object()));
+        }
+        assert_eq!(state, serde_json::from_value(saved).unwrap());
+    }
+
+    #[test]
+    fn malformed_text_lists_are_not_silently_discarded() {
+        for field in ["foreshadows", "hard_constraints", "soft_preferences"] {
+            for invalid in [
+                serde_json::json!(42),
+                serde_json::json!(null),
+                serde_json::json!({}),
+                serde_json::json!({"description": false}),
+            ] {
+                let mut json = serde_json::to_value(StoryState::default()).unwrap();
+                json[field] = serde_json::json!([invalid]);
+                assert!(
+                    serde_json::from_value::<StoryState>(json).is_err(),
+                    "{field}"
+                );
+            }
+        }
+        assert!(
+            serde_json::from_value::<ForeshadowTracker>(serde_json::json!({
+                "id": "f", "description": "key", "planted_at": 1, "status": "unknown"
+            }))
+            .is_err()
+        );
+        assert!(serde_json::from_value::<Constraint>(serde_json::json!({
+            "id": "c", "description": "secret", "severity": "unknown"
+        }))
+        .is_err());
     }
 
     #[test]

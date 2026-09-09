@@ -52,10 +52,14 @@ pub fn render_state_sync_prompt(pkg: &ContextPackage) -> String {
     if !pkg.pending_foreshadows.is_empty() {
         prompt.push_str("## 🌱 未回收伏笔\n");
         for fh in &pkg.pending_foreshadows {
-            prompt.push_str(&format!(
-                "- {} (埋于第{}章)\n",
-                fh.description, fh.planted_at
-            ));
+            if fh.planted_at == 0 {
+                prompt.push_str(&format!("- {} (埋设章节未知)\n", fh.description));
+            } else {
+                prompt.push_str(&format!(
+                    "- {} (埋于第{}章)\n",
+                    fh.description, fh.planted_at
+                ));
+            }
         }
         prompt.push('\n');
     }
