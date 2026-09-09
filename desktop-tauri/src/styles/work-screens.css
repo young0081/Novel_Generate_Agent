@@ -1223,6 +1223,36 @@
   justify-content: space-between;
   gap: var(--sp-4);
 }
+.studio2__advanced {
+  margin-top: var(--sp-4);
+  border-top: 1px dashed var(--line);
+  padding-top: var(--sp-3);
+}
+.studio2__advanced summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  color: var(--ink-4);
+  font-size: 11px;
+  list-style-position: inside;
+}
+.studio2__advanced summary span {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.studio2__advanced summary:hover { color: var(--ink-2); }
+.studio2__advanced-body {
+  display: flex;
+  align-items: end;
+  gap: var(--sp-4);
+  margin-top: var(--sp-3);
+}
+.studio2__advanced-note {
+  padding-bottom: 9px;
+  color: var(--ink-4);
+  font-size: 11px;
+}
 .studio2__shortcut-hint {
   font-size: 11px;
   color: var(--ink-4);
@@ -1391,9 +1421,11 @@ kbd {
   .studio2 { padding-left: var(--sp-4); padding-right: var(--sp-4); }
   .studio2__composer-row { flex-wrap: wrap; }
   .studio2__title { flex: 1 1 100%; }
+  .studio2__composer-row > .btn { flex: 1; }
+  .studio2__advanced-body { align-items: stretch; flex-direction: column; gap: var(--sp-2); }
   .studio2__steps-control { flex: 1; }
   .studio2__steps { width: 100%; }
-  .studio2__composer-row > .btn { flex: 1; }
+  .studio2__advanced-note { padding-bottom: 0; }
 }
 
 /* message cards (transcript) */

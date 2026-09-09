@@ -432,20 +432,6 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
             disabled={running}
             aria-label="章节标题"
           />
-          <label className="studio2__steps-control">
-            <span>步骤上限</span>
-            <select
-              className="select studio2__steps"
-              value={maxSteps}
-              onChange={(e) => setMaxSteps(Number(e.target.value))}
-              disabled={running}
-              aria-label="步骤上限"
-            >
-              {STEP_LIMIT_OPTIONS.map((value) => (
-                <option key={value} value={value}>{value} 步</option>
-              ))}
-            </select>
-          </label>
           <button
             className="btn btn--primary"
             onClick={() => void start()}
@@ -474,12 +460,35 @@ export default function StudioWork({ onOpenSettings, initialSessionId }: StudioW
         <div className="studio2__hints">
           <div className="studio2__hint">
             <IconInfo size={12} />
-            将调用当前模型自主创作，可能写入 book/ 下的章节文件
+            写下目标后点击开始，其他设置会自动处理
           </div>
           <div className="studio2__shortcut-hint">
             <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 快速开始
           </div>
         </div>
+        <details className="studio2__advanced">
+          <summary>
+            高级设置
+            <span>步骤上限：{maxSteps} 步</span>
+          </summary>
+          <div className="studio2__advanced-body">
+            <label className="studio2__steps-control">
+              <span>本次最多运行</span>
+              <select
+                className="select studio2__steps"
+                value={maxSteps}
+                onChange={(e) => setMaxSteps(Number(e.target.value))}
+                disabled={running}
+                aria-label="步骤上限"
+              >
+                {STEP_LIMIT_OPTIONS.map((value) => (
+                  <option key={value} value={value}>{value} 步</option>
+                ))}
+              </select>
+            </label>
+            <span className="studio2__advanced-note">一般无需调整。运行太久时可调低，内容较长时可调高。</span>
+          </div>
+        </details>
       </section>
 
       {/* live + result panel */}
